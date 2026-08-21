@@ -138,6 +138,10 @@ def execute_command(args):
                 lst.insert(0, value)
             length = len(lst)
         return b":" + str(length).encode() + b"\r\n"
+    if command == "llen" and len(args) >= 2:
+        with lists_lock:
+            length = len(lists.get(args[1], []))
+        return b":" + str(length).encode() + b"\r\n"
     if command == "lrange" and len(args) >= 4:
         key = args[1]
         try:
