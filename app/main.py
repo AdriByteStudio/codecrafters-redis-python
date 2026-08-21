@@ -23,6 +23,20 @@ blpop_waiters = {}  # key -> deque of _BlpopWaiter
 streams = {}
 streams_lock = threading.Lock()
 
+# WATCH (optimistic locking) registrations:
+# maps watched key -> set of _Watcher objects watching that key.
+watched_keys = {}
+watched_lock = threading.Lock()
+
+
+class _Watcher:
+    """Per-connection WATCH registration (hashable, so it can live in
+    the watched_keys sets)."""
+
+    def __init__(self):
+        self.keys = set()
+        self.dirty = False
+
 
 class _BlpopWaiter:
     def __init__(self):
@@ -46,12 +60,16 @@ def serve_blpop_waiters(key):
     Must be called with lists_lock held."""
     queue = blpop_waiters.get(key)
     lst = lists.get(key)
+    served_any = False
     while queue and lst:
         waiter = queue.popleft()
         waiter.key = key
         waiter.value = lst.pop(0)
         waiter.served = True
         waiter.event.set()
+        served_any = True
+    if served_any:
+        mark_key_dirty(key)
 
 
 def notify_xread_waiters():
@@ -76,6 +94,31 @@ def get_live_value(key):
             del store[key]  # lazily evict expired key
             return None
         return value
+
+
+def mark_key_dirty(key):
+    """Flag every WATCH registration on `key` as modified, so the
+    watching transactions abort at EXEC time."""
+    with watched_lock:
+        for watcher in watched_keys.get(key, ()):
+            watcher.dirty = True
+
+
+def unwatch_tx(tx):
+    """Drop all WATCH registrations held by a connection and reset its
+    dirty flag."""
+    watcher = tx.get("watcher")
+    if watcher is None:
+        return
+    with watched_lock:
+        for key in watcher.keys:
+            watchers = watched_keys.get(key)
+            if watchers is not None:
+                watchers.discard(watcher)
+                if not watchers:
+                    del watched_keys[key]
+    watcher.keys = set()
+    watcher.dirty = False
 
 
 def parse_resp_array(buffer):
@@ -195,8 +238,6 @@ def execute_command(args, tx=None):
     without a connection (e.g. internal use/tests).
     """
     command = args[0].decode("utf-8", "replace").lower() if args else ""
-    if command == "ping":
-        return b"+PONG\r\n"
     if command == "multi":
         # Start a transaction for this connection.
         if tx is not None:
@@ -207,9 +248,18 @@ def execute_command(args, tx=None):
         if tx is None or not tx.get("active"):
             return b"-ERR EXEC without MULTI\r\n"
         tx["active"] = False
+        # Abort if any watched key was touched since WATCH; watch state
+        # is cleared whether the transaction succeeds or aborts.
+        watcher = tx.get("watcher")
+        aborted = bool(watcher and watcher.dirty)
+        unwatch_tx(tx)
+        queued = tx["queue"]
+        tx["queue"] = []
+        if aborted:
+            return b"*-1\r\n"
         # Execute every queued command; EXEC replies with an array of
         # their responses (empty array when nothing was queued).
-        responses = [execute_command(cmd, tx) for cmd in tx.get("queue", [])]
+        responses = [execute_command(cmd, tx) for cmd in queued]
         return b"*" + str(len(responses)).encode() + b"\r\n" + b"".join(responses)
     if command == "discard":
         # Must be handled before queueing so it works mid-transaction.
@@ -217,19 +267,26 @@ def execute_command(args, tx=None):
             return b"-ERR DISCARD without MULTI\r\n"
         tx["active"] = False
         tx["queue"] = []
+        unwatch_tx(tx)  # DISCARD also flushes watched keys, like Redis
         return b"+OK\r\n"
     if command == "watch" and len(args) >= 2:
         # Optimistic locking: WATCH is only allowed outside a transaction.
         if tx is not None and tx.get("active"):
             return b"-ERR WATCH inside MULTI is not allowed\r\n"
         if tx is not None:
-            tx.setdefault("watched", set()).update(args[1:])
+            watcher = tx.setdefault("watcher", _Watcher())
+            with watched_lock:
+                for key in args[1:]:
+                    watcher.keys.add(key)
+                    watched_keys.setdefault(key, set()).add(watcher)
         return b"+OK\r\n"
     # A transaction is active: queue every other command instead of
     # executing it, so the database stays untouched until EXEC.
     if tx is not None and tx.get("active"):
         tx["queue"].append(args)
         return b"+QUEUED\r\n"
+    if command == "ping":
+        return b"+PONG\r\n"
     if command == "echo":
         value = args[1] if len(args) > 1 else b""
         return encode_bulk_string(value)
@@ -252,6 +309,7 @@ def execute_command(args, tx=None):
                 break  # unknown/unsupported option: ignore for now
         with store_lock:
             store[args[1]] = (args[2], expires_at)
+        mark_key_dirty(args[1])
         return b"+OK\r\n"
     if command == "get" and len(args) >= 2:
         value = get_live_value(args[1])
@@ -268,6 +326,7 @@ def execute_command(args, tx=None):
             if entry is None:
                 # Missing key: INCR initializes it to 1.
                 store[key] = (b"1", None)
+                mark_key_dirty(key)
                 return b":1\r\n"
             value, expires_at = entry
             try:
@@ -277,6 +336,7 @@ def execute_command(args, tx=None):
             new_value = current + 1
             # Preserve any existing expiry, like real Redis.
             store[key] = (str(new_value).encode(), expires_at)
+            mark_key_dirty(key)
             return b":" + str(new_value).encode() + b"\r\n"
     if command == "rpush" and len(args) >= 3:
         key, values = args[1], args[2:]
@@ -285,6 +345,7 @@ def execute_command(args, tx=None):
             lst.extend(values)
             length = len(lst)
             serve_blpop_waiters(key)
+        mark_key_dirty(key)
         return b":" + str(length).encode() + b"\r\n"
     if command == "lpush" and len(args) >= 3:
         key, values = args[1], args[2:]
@@ -296,6 +357,7 @@ def execute_command(args, tx=None):
                 lst.insert(0, value)
             length = len(lst)
             serve_blpop_waiters(key)
+        mark_key_dirty(key)
         return b":" + str(length).encode() + b"\r\n"
     if command == "llen" and len(args) >= 2:
         with lists_lock:
@@ -321,6 +383,7 @@ def execute_command(args, tx=None):
             del lst[:n]
             if not lst:  # drop empty lists, like real Redis
                 del lists[args[1]]
+            mark_key_dirty(args[1])
         if count is None:
             return encode_bulk_string(popped[0])
         return encode_resp_array(popped)
@@ -339,6 +402,7 @@ def execute_command(args, tx=None):
                     value = lst.pop(0)
                     if not lst:
                         del lists[key]
+                    mark_key_dirty(key)
                     return encode_resp_array([key, value])
             # Nothing available: register as a waiter on every key.
             waiter = _BlpopWaiter()
@@ -439,6 +503,7 @@ def execute_command(args, tx=None):
                 )
             entries.append((entry_id, fields))
             notify_xread_waiters()  # wake blocked XREAD clients
+        mark_key_dirty(key)
         return encode_bulk_string(entry_id)
     if command == "xrange" and len(args) >= 4:
         key, start_arg, end_arg = args[1], args[2], args[3]
@@ -582,7 +647,7 @@ def execute_command(args, tx=None):
 
 def handle_connection(conn):
     # Per-connection transaction state (MULTI/EXEC/WATCH).
-    tx = {"active": False, "queue": [], "watched": set()}
+    tx = {"active": False, "queue": [], "watcher": _Watcher()}
     with conn:
         buffer = b""
         try:
@@ -598,6 +663,8 @@ def handle_connection(conn):
                     conn.sendall(execute_command(args, tx))
         except (ConnectionResetError, BrokenPipeError):
             pass  # client disconnected abruptly
+        finally:
+            unwatch_tx(tx)  # drop WATCH registrations held by this connection
 
 
 def main():
