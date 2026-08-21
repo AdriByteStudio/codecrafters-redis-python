@@ -276,25 +276,46 @@ def execute_command(args):
             return b"+string\r\n"
         return b"+none\r\n"
     if command == "xadd" and len(args) >= 5:
-        key, entry_id = args[1], args[2]
-        parsed = parse_stream_id(entry_id)
-        if parsed is None:
-            return b"-ERR Invalid stream ID specified as stream command argument\r\n"
-        if parsed <= (0, 0):
-            return b"-ERR The ID specified in XADD must be greater than 0-0\r\n"
+        key, id_arg = args[1], args[2]
         pairs = args[3:]
         if len(pairs) % 2 != 0:
             return b"-ERR wrong number of arguments for 'xadd' command\r\n"
         fields = list(zip(pairs[0::2], pairs[1::2]))
+        invalid_err = b"-ERR Invalid stream ID specified as stream command argument\r\n"
         with streams_lock:
             entries = streams.setdefault(key, [])
-            if entries:
-                last_id = parse_stream_id(entries[-1][0])
-                if last_id is not None and parsed <= last_id:
-                    return (
-                        b"-ERR The ID specified in XADD is equal or smaller "
-                        b"than the target stream top item\r\n"
-                    )
+            last_id = parse_stream_id(entries[-1][0]) if entries else None
+
+            if id_arg.endswith(b"-*"):
+                # Auto-generate only the sequence number (<ms>-*).
+                try:
+                    ms = int(id_arg[:-2])
+                except ValueError:
+                    return invalid_err
+                if ms < 0:
+                    return invalid_err
+                if last_id is not None and last_id[0] == ms:
+                    seq = last_id[1] + 1  # continue the same millisecond
+                elif ms == 0:
+                    seq = 1  # 0-0 is never valid
+                else:
+                    seq = 0
+                new_id = (ms, seq)
+                entry_id = f"{ms}-{seq}".encode()
+            else:
+                # Explicit ID (<ms>-<seq>).
+                new_id = parse_stream_id(id_arg)
+                if new_id is None:
+                    return invalid_err
+                entry_id = id_arg
+
+            if new_id <= (0, 0):
+                return b"-ERR The ID specified in XADD must be greater than 0-0\r\n"
+            if last_id is not None and new_id <= last_id:
+                return (
+                    b"-ERR The ID specified in XADD is equal or smaller "
+                    b"than the target stream top item\r\n"
+                )
             entries.append((entry_id, fields))
         return encode_bulk_string(entry_id)
     return b"-ERR unknown command\r\n"
