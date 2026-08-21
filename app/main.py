@@ -1,6 +1,10 @@
 import socket
 import threading
 
+# In-memory key-value store shared by all client connections.
+store = {}
+store_lock = threading.Lock()
+
 
 def parse_resp_array(buffer):
     """Try to parse one RESP array from the front of `buffer`.
@@ -52,6 +56,14 @@ def execute_command(args):
     if command == "echo":
         value = args[1] if len(args) > 1 else b""
         return encode_bulk_string(value)
+    if command == "set" and len(args) >= 3:
+        with store_lock:
+            store[args[1]] = args[2]
+        return b"+OK\r\n"
+    if command == "get" and len(args) >= 2:
+        with store_lock:
+            value = store.get(args[1])
+        return encode_bulk_string(value) if value is not None else b"$-1\r\n"
     return b"-ERR unknown command\r\n"
 
 
