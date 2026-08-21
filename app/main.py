@@ -218,6 +218,12 @@ def execute_command(args, tx=None):
         tx["active"] = False
         tx["queue"] = []
         return b"+OK\r\n"
+    if command == "watch" and len(args) >= 2:
+        # Optimistic locking: remember watched keys per connection.
+        # Abort-on-modified behavior comes in later stages.
+        if tx is not None:
+            tx.setdefault("watched", set()).update(args[1:])
+        return b"+OK\r\n"
     # A transaction is active: queue every other command instead of
     # executing it, so the database stays untouched until EXEC.
     if tx is not None and tx.get("active"):
@@ -574,8 +580,8 @@ def execute_command(args, tx=None):
 
 
 def handle_connection(conn):
-    # Per-connection transaction state (MULTI/EXEC).
-    tx = {"active": False, "queue": []}
+    # Per-connection transaction state (MULTI/EXEC/WATCH).
+    tx = {"active": False, "queue": [], "watched": set()}
     with conn:
         buffer = b""
         try:
