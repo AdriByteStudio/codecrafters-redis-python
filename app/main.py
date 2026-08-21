@@ -143,14 +143,28 @@ def execute_command(args):
             length = len(lists.get(args[1], []))
         return b":" + str(length).encode() + b"\r\n"
     if command == "lpop" and len(args) >= 2:
+        count = None
+        if len(args) >= 3:
+            try:
+                count = int(args[2])
+            except ValueError:
+                return b"-ERR value is not an integer or out of range\r\n"
+            if count <= 0:
+                return b"-ERR value is out of range, must be positive\r\n"
         with lists_lock:
             lst = lists.get(args[1])
             if not lst:
-                return b"$-1\r\n"
-            value = lst.pop(0)
+                # With a count arg, missing/empty list -> empty array;
+                # without -> null bulk string.
+                return encode_resp_array([]) if count is not None else b"$-1\r\n"
+            n = 1 if count is None else min(count, len(lst))
+            popped = lst[:n]
+            del lst[:n]
             if not lst:  # drop empty lists, like real Redis
                 del lists[args[1]]
-        return encode_bulk_string(value)
+        if count is None:
+            return encode_bulk_string(popped[0])
+        return encode_resp_array(popped)
     if command == "lrange" and len(args) >= 4:
         key = args[1]
         try:
