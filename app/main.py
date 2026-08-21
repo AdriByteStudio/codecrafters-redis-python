@@ -8,6 +8,11 @@ import time
 store = {}
 store_lock = threading.Lock()
 
+# In-memory lists shared by all client connections.
+# Maps key -> list of value bytes (order matters: index 0 is the head).
+lists = {}
+lists_lock = threading.Lock()
+
 
 def now_ms():
     return time.monotonic() * 1000
@@ -99,6 +104,13 @@ def execute_command(args):
     if command == "get" and len(args) >= 2:
         value = get_live_value(args[1])
         return encode_bulk_string(value) if value is not None else b"$-1\r\n"
+    if command == "rpush" and len(args) >= 3:
+        key, values = args[1], args[2:]
+        with lists_lock:
+            lst = lists.setdefault(key, [])
+            lst.extend(values)
+            length = len(lst)
+        return b":" + str(length).encode() + b"\r\n"
     return b"-ERR unknown command\r\n"
 
 
