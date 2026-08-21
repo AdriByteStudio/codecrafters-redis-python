@@ -1,9 +1,29 @@
 import socket
 import threading
+import time
 
 # In-memory key-value store shared by all client connections.
+# Maps key -> (value_bytes, expires_at_ms) where expires_at_ms is a
+# time.monotonic() deadline in ms, or None if the key never expires.
 store = {}
 store_lock = threading.Lock()
+
+
+def now_ms():
+    return time.monotonic() * 1000
+
+
+def get_live_value(key):
+    """Return the value for key if it exists and hasn't expired, else None."""
+    with store_lock:
+        entry = store.get(key)
+        if entry is None:
+            return None
+        value, expires_at = entry
+        if expires_at is not None and now_ms() >= expires_at:
+            del store[key]  # lazily evict expired key
+            return None
+        return value
 
 
 def parse_resp_array(buffer):
@@ -57,12 +77,27 @@ def execute_command(args):
         value = args[1] if len(args) > 1 else b""
         return encode_bulk_string(value)
     if command == "set" and len(args) >= 3:
+        expires_at = None
+        i = 3
+        while i < len(args):
+            option = args[i].decode("utf-8", "replace").lower()
+            if option in ("px", "ex") and i + 1 < len(args):
+                try:
+                    duration_ms = int(args[i + 1])
+                    if option == "ex":
+                        duration_ms *= 1000
+                except ValueError:
+                    return b"-ERR value is not an integer or out of range\r\n"
+                if duration_ms > 0:
+                    expires_at = now_ms() + duration_ms
+                i += 2
+            else:
+                break  # unknown/unsupported option: ignore for now
         with store_lock:
-            store[args[1]] = args[2]
+            store[args[1]] = (args[2], expires_at)
         return b"+OK\r\n"
     if command == "get" and len(args) >= 2:
-        with store_lock:
-            value = store.get(args[1])
+        value = get_live_value(args[1])
         return encode_bulk_string(value) if value is not None else b"$-1\r\n"
     return b"-ERR unknown command\r\n"
 
