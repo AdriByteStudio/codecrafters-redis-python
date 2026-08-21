@@ -136,6 +136,41 @@ def parse_stream_id(entry_id: bytes):
     return ms, seq
 
 
+def parse_xrange_bound(bound: bytes, is_start: bool):
+    """Parse an XRANGE range bound into an (ms, seq) tuple.
+    '-' is the minimum ID, '+' the maximum. Incomplete IDs default the
+    sequence to 0 for start bounds and unbounded for end bounds."""
+    if bound == b"-":
+        return (0, 0)
+    if bound == b"+":
+        return (float("inf"), float("inf"))
+    parts = bound.split(b"-")
+    try:
+        ms = int(parts[0])
+        if len(parts) == 1:
+            return (ms, 0 if is_start else float("inf"))
+        if len(parts) == 2:
+            return (ms, int(parts[1]))
+    except ValueError:
+        pass
+    return None
+
+
+def encode_stream_entry(entry) -> bytes:
+    """Encode one stream entry as a RESP 2-element array:
+    [id, [field1, value1, field2, value2, ...]]."""
+    entry_id, fields = entry
+    flat = b"".join(
+        encode_bulk_string(item) for pair in fields for item in pair
+    )
+    return (
+        b"*2\r\n"
+        + encode_bulk_string(entry_id)
+        + b"*" + str(len(fields) * 2).encode() + b"\r\n"
+        + flat
+    )
+
+
 def execute_command(args):
     """Execute a parsed command (list of byte-string arguments)."""
     command = args[0].decode("utf-8", "replace").lower() if args else ""
@@ -328,6 +363,37 @@ def execute_command(args):
                 )
             entries.append((entry_id, fields))
         return encode_bulk_string(entry_id)
+    if command == "xrange" and len(args) >= 4:
+        key, start_arg, end_arg = args[1], args[2], args[3]
+        start_id = parse_xrange_bound(start_arg, is_start=True)
+        end_id = parse_xrange_bound(end_arg, is_start=False)
+        if start_id is None or end_id is None:
+            return b"-ERR Invalid stream ID specified as stream command argument\r\n"
+        # Optional COUNT <n> argument.
+        count = None
+        i = 4
+        while i < len(args):
+            opt = args[i].decode("utf-8", "replace").lower()
+            if opt == "count" and i + 1 < len(args):
+                try:
+                    count = int(args[i + 1])
+                except ValueError:
+                    return b"-ERR value is not an integer or out of range\r\n"
+                i += 2
+            else:
+                break
+        matched = []
+        with streams_lock:
+            for entry in streams.get(key, []):
+                eid = parse_stream_id(entry[0])
+                if eid is None:
+                    continue
+                if start_id <= eid <= end_id:
+                    matched.append(entry)
+                    if count is not None and len(matched) >= count:
+                        break
+        body = b"".join(encode_stream_entry(e) for e in matched)
+        return b"*" + str(len(matched)).encode() + b"\r\n" + body
     return b"-ERR unknown command\r\n"
 
 
