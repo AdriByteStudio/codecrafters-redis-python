@@ -1,6 +1,7 @@
 import socket
 import threading
 import time
+from collections import deque
 
 # In-memory key-value store shared by all client connections.
 # Maps key -> (value_bytes, expires_at_ms) where expires_at_ms is a
@@ -12,6 +13,30 @@ store_lock = threading.Lock()
 # Maps key -> list of value bytes (order matters: index 0 is the head).
 lists = {}
 lists_lock = threading.Lock()
+
+# Blocked BLPOP clients, FIFO per list key (longest-waiting first).
+blpop_waiters = {}  # key -> deque of _BlpopWaiter
+
+
+class _BlpopWaiter:
+    def __init__(self):
+        self.event = threading.Event()
+        self.served = False
+        self.key = None
+        self.value = None
+
+
+def serve_blpop_waiters(key):
+    """Hand list elements directly to blocked BLPOP clients (FIFO).
+    Must be called with lists_lock held."""
+    queue = blpop_waiters.get(key)
+    lst = lists.get(key)
+    while queue and lst:
+        waiter = queue.popleft()
+        waiter.key = key
+        waiter.value = lst.pop(0)
+        waiter.served = True
+        waiter.event.set()
 
 
 def now_ms():
@@ -127,6 +152,7 @@ def execute_command(args):
             lst = lists.setdefault(key, [])
             lst.extend(values)
             length = len(lst)
+            serve_blpop_waiters(key)
         return b":" + str(length).encode() + b"\r\n"
     if command == "lpush" and len(args) >= 3:
         key, values = args[1], args[2:]
@@ -137,6 +163,7 @@ def execute_command(args):
             for value in values:
                 lst.insert(0, value)
             length = len(lst)
+            serve_blpop_waiters(key)
         return b":" + str(length).encode() + b"\r\n"
     if command == "llen" and len(args) >= 2:
         with lists_lock:
@@ -165,6 +192,44 @@ def execute_command(args):
         if count is None:
             return encode_bulk_string(popped[0])
         return encode_resp_array(popped)
+    if command == "blpop" and len(args) >= 3:
+        keys = args[1:-1]
+        try:
+            timeout = float(args[-1])
+        except ValueError:
+            return b"-ERR timeout is not a float or out of range\r\n"
+        deadline = None if timeout <= 0 else time.monotonic() + timeout
+        with lists_lock:
+            # Serve immediately if any requested list has elements.
+            for key in keys:
+                lst = lists.get(key)
+                if lst:
+                    value = lst.pop(0)
+                    if not lst:
+                        del lists[key]
+                    return encode_resp_array([key, value])
+            # Nothing available: register as a waiter on every key.
+            waiter = _BlpopWaiter()
+            for key in keys:
+                blpop_waiters.setdefault(key, deque()).append(waiter)
+        # Block until served or timed out (timeout 0 waits indefinitely).
+        while True:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                break
+            if waiter.event.wait(remaining) and waiter.served:
+                return encode_resp_array([waiter.key, waiter.value])
+            if not waiter.event.is_set():
+                break  # timed out
+        with lists_lock:
+            for key in keys:
+                queue = blpop_waiters.get(key)
+                if queue:
+                    try:
+                        queue.remove(waiter)
+                    except ValueError:
+                        pass
+        return b"*-1\r\n"
     if command == "lrange" and len(args) >= 4:
         key = args[1]
         try:
