@@ -187,17 +187,30 @@ def encode_stream_entry(entry) -> bytes:
     )
 
 
-def execute_command(args):
-    """Execute a parsed command (list of byte-string arguments)."""
+def execute_command(args, tx=None):
+    """Execute a parsed command (list of byte-string arguments).
+
+    `tx` is the calling connection's transaction state
+    ({"active": bool, "queue": [args, ...]}), or None for callers
+    without a connection (e.g. internal use/tests).
+    """
     command = args[0].decode("utf-8", "replace").lower() if args else ""
     if command == "ping":
         return b"+PONG\r\n"
     if command == "multi":
-        # Starts a transaction; queuing & EXEC come in later stages.
+        # Start a transaction for this connection.
+        if tx is not None:
+            tx["active"] = True
+            tx["queue"] = []
         return b"+OK\r\n"
     if command == "exec":
-        # Queueing isn't implemented yet, so MULTI was never called.
-        return b"-ERR EXEC without MULTI\r\n"
+        if tx is None or not tx.get("active"):
+            return b"-ERR EXEC without MULTI\r\n"
+        tx["active"] = False
+        # Execute every queued command; EXEC replies with an array of
+        # their responses (empty array when nothing was queued).
+        responses = [execute_command(cmd, tx) for cmd in tx.get("queue", [])]
+        return b"*" + str(len(responses)).encode() + b"\r\n" + b"".join(responses)
     if command == "echo":
         value = args[1] if len(args) > 1 else b""
         return encode_bulk_string(value)
@@ -549,6 +562,8 @@ def execute_command(args):
 
 
 def handle_connection(conn):
+    # Per-connection transaction state (MULTI/EXEC).
+    tx = {"active": False, "queue": []}
     with conn:
         buffer = b""
         try:
@@ -561,7 +576,7 @@ def handle_connection(conn):
                     args, buffer = parse_resp_array(buffer)
                     if args is None:
                         break
-                    conn.sendall(execute_command(args))
+                    conn.sendall(execute_command(args, tx))
         except (ConnectionResetError, BrokenPipeError):
             pass  # client disconnected abruptly
 
