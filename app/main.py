@@ -286,7 +286,17 @@ def execute_command(args):
             entries = streams.setdefault(key, [])
             last_id = parse_stream_id(entries[-1][0]) if entries else None
 
-            if id_arg.endswith(b"-*"):
+            if id_arg == b"*":
+                # Fully auto-generated ID: current Unix time in ms,
+                # sequence continues from the last entry in the same ms.
+                ms = int(time.time() * 1000)
+                if last_id is not None and last_id[0] == ms:
+                    seq = last_id[1] + 1
+                else:
+                    seq = 0
+                new_id = (ms, seq)
+                entry_id = f"{ms}-{seq}".encode()
+            elif id_arg.endswith(b"-*"):
                 # Auto-generate only the sequence number (<ms>-*).
                 try:
                     ms = int(id_arg[:-2])
