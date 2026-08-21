@@ -243,6 +243,14 @@ def execute_command(args):
             start_n, stop_n = lrange_bounds(start, stop, len(lst))
             elements = lst[start_n:stop_n + 1]
         return encode_resp_array(elements)
+    if command == "type" and len(args) >= 2:
+        key = args[1]
+        with lists_lock:
+            if key in lists:
+                return b"+list\r\n"
+        if get_live_value(key) is not None:
+            return b"+string\r\n"
+        return b"+none\r\n"
     return b"-ERR unknown command\r\n"
 
 
