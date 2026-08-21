@@ -80,6 +80,16 @@ def encode_resp_array(values) -> bytes:
     )
 
 
+def lrange_bounds(start: int, stop: int, length: int):
+    """Normalize Redis LRANGE indexes (possibly negative) to non-negative,
+    inclusive bounds. Negative out-of-range indexes are clamped to 0."""
+    if start < 0:
+        start = max(length + start, 0)
+    if stop < 0:
+        stop = max(length + stop, 0)
+    return start, stop
+
+
 def execute_command(args):
     """Execute a parsed command (list of byte-string arguments)."""
     command = args[0].decode("utf-8", "replace").lower() if args else ""
@@ -124,10 +134,12 @@ def execute_command(args):
             start, stop = int(args[2]), int(args[3])
         except ValueError:
             return b"-ERR value is not an integer or out of range\r\n"
-        # Python slicing covers all required rules: start > stop or
-        # start >= len -> empty; stop >= len -> clamped to last element.
+        # Normalize negative indexes, then slice. Covers all required rules:
+        # start > stop or start >= len -> empty; stop >= len -> clamped.
         with lists_lock:
-            elements = lists.get(key, [])[start:stop + 1]
+            lst = lists.get(key, [])
+            start_n, stop_n = lrange_bounds(start, stop, len(lst))
+            elements = lst[start_n:stop_n + 1]
         return encode_resp_array(elements)
     return b"-ERR unknown command\r\n"
 
