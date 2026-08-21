@@ -218,6 +218,28 @@ def execute_command(args):
     if command == "get" and len(args) >= 2:
         value = get_live_value(args[1])
         return encode_bulk_string(value) if value is not None else b"$-1\r\n"
+    if command == "incr" and len(args) >= 2:
+        key = args[1]
+        with store_lock:
+            entry = store.get(key)
+            if entry is not None:
+                value, expires_at = entry
+                if expires_at is not None and now_ms() >= expires_at:
+                    del store[key]  # lazily evict expired key
+                    entry = None
+            if entry is None:
+                # Missing key: INCR initializes it to 1.
+                store[key] = (b"1", None)
+                return b":1\r\n"
+            value, expires_at = entry
+            try:
+                current = int(value)
+            except ValueError:
+                return b"-ERR value is not an integer or out of range\r\n"
+            new_value = current + 1
+            # Preserve any existing expiry, like real Redis.
+            store[key] = (str(new_value).encode(), expires_at)
+            return b":" + str(new_value).encode() + b"\r\n"
     if command == "rpush" and len(args) >= 3:
         key, values = args[1], args[2:]
         with lists_lock:
