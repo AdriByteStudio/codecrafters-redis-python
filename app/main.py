@@ -211,6 +211,13 @@ def execute_command(args, tx=None):
         # their responses (empty array when nothing was queued).
         responses = [execute_command(cmd, tx) for cmd in tx.get("queue", [])]
         return b"*" + str(len(responses)).encode() + b"\r\n" + b"".join(responses)
+    if command == "discard":
+        # Must be handled before queueing so it works mid-transaction.
+        if tx is None or not tx.get("active"):
+            return b"-ERR DISCARD without MULTI\r\n"
+        tx["active"] = False
+        tx["queue"] = []
+        return b"+OK\r\n"
     # A transaction is active: queue every other command instead of
     # executing it, so the database stays untouched until EXEC.
     if tx is not None and tx.get("active"):
