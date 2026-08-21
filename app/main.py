@@ -211,6 +211,11 @@ def execute_command(args, tx=None):
         # their responses (empty array when nothing was queued).
         responses = [execute_command(cmd, tx) for cmd in tx.get("queue", [])]
         return b"*" + str(len(responses)).encode() + b"\r\n" + b"".join(responses)
+    # A transaction is active: queue every other command instead of
+    # executing it, so the database stays untouched until EXEC.
+    if tx is not None and tx.get("active"):
+        tx["queue"].append(args)
+        return b"+QUEUED\r\n"
     if command == "echo":
         value = args[1] if len(args) > 1 else b""
         return encode_bulk_string(value)
