@@ -280,6 +280,11 @@ def execute_command(args, tx=None):
                     watcher.keys.add(key)
                     watched_keys.setdefault(key, set()).add(watcher)
         return b"+OK\r\n"
+    if command == "unwatch":
+        # Flush every watched key for this connection; always +OK.
+        if tx is not None:
+            unwatch_tx(tx)
+        return b"+OK\r\n"
     # A transaction is active: queue every other command instead of
     # executing it, so the database stays untouched until EXEC.
     if tx is not None and tx.get("active"):
