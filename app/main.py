@@ -121,6 +121,21 @@ def lrange_bounds(start: int, stop: int, length: int):
     return start, stop
 
 
+def parse_stream_id(entry_id: bytes):
+    """Parse a stream ID '<millisecondsTime>-<sequenceNumber>' into an
+    (ms, seq) integer tuple, or None if malformed."""
+    parts = entry_id.split(b"-")
+    if len(parts) != 2:
+        return None
+    try:
+        ms, seq = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if ms < 0 or seq < 0:
+        return None
+    return ms, seq
+
+
 def execute_command(args):
     """Execute a parsed command (list of byte-string arguments)."""
     command = args[0].decode("utf-8", "replace").lower() if args else ""
@@ -262,12 +277,25 @@ def execute_command(args):
         return b"+none\r\n"
     if command == "xadd" and len(args) >= 5:
         key, entry_id = args[1], args[2]
+        parsed = parse_stream_id(entry_id)
+        if parsed is None:
+            return b"-ERR Invalid stream ID specified as stream command argument\r\n"
+        if parsed <= (0, 0):
+            return b"-ERR The ID specified in XADD must be greater than 0-0\r\n"
         pairs = args[3:]
         if len(pairs) % 2 != 0:
             return b"-ERR wrong number of arguments for 'xadd' command\r\n"
         fields = list(zip(pairs[0::2], pairs[1::2]))
         with streams_lock:
-            streams.setdefault(key, []).append((entry_id, fields))
+            entries = streams.setdefault(key, [])
+            if entries:
+                last_id = parse_stream_id(entries[-1][0])
+                if last_id is not None and parsed <= last_id:
+                    return (
+                        b"-ERR The ID specified in XADD is equal or smaller "
+                        b"than the target stream top item\r\n"
+                    )
+            entries.append((entry_id, fields))
         return encode_bulk_string(entry_id)
     return b"-ERR unknown command\r\n"
 
