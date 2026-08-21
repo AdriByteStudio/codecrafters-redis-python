@@ -45,6 +45,13 @@ def serve_blpop_waiters(key):
         waiter.event.set()
 
 
+def notify_xread_waiters():
+    """Wake all blocked XREAD clients so they re-scan the streams.
+    Must be called with streams_lock held."""
+    for waiter in xread_waiters:
+        waiter.event.set()
+
+
 def now_ms():
     return time.monotonic() * 1000
 
@@ -362,6 +369,7 @@ def execute_command(args):
                     b"than the target stream top item\r\n"
                 )
             entries.append((entry_id, fields))
+            notify_xread_waiters()  # wake blocked XREAD clients
         return encode_bulk_string(entry_id)
     if command == "xrange" and len(args) >= 4:
         key, start_arg, end_arg = args[1], args[2], args[3]
@@ -394,6 +402,117 @@ def execute_command(args):
                         break
         body = b"".join(encode_stream_entry(e) for e in matched)
         return b"*" + str(len(matched)).encode() + b"\r\n" + body
+    if command == "xread":
+        # Parse optional arguments before the STREAMS keyword.
+        count = None
+        block_ms = None
+        i = 1
+        while i < len(args):
+            opt = args[i].decode("utf-8", "replace").lower()
+            if opt == "count" and i + 2 < len(args):
+                try:
+                    count = int(args[i + 1])
+                except ValueError:
+                    return b"-ERR value is not an integer or out of range\r\n"
+                i += 2
+            elif opt == "block" and i + 2 < len(args):
+                try:
+                    block_ms = int(args[i + 1])
+                except ValueError:
+                    return b"-ERR value is not an integer or out of range\r\n"
+                i += 2
+            elif opt == "streams":
+                i += 1
+                break
+            else:
+                return b"-ERR syntax error\r\n"
+        else:
+            return b"-ERR syntax error\r\n"
+        tail = args[i:]
+        if not tail or len(tail) % 2 != 0:
+            return b"-ERR wrong number of arguments for 'xread' command\r\n"
+        half = len(tail) // 2
+        keys, ids = tail[:half], tail[half:]
+
+        # Resolve IDs once, up front ('$' = last entry id at command time).
+        resolved_ids = []
+        with streams_lock:
+            for id_arg in ids:
+                if id_arg == b"$":
+                    entries = streams.get(key_for_$ := None, [])  # placeholder
+                resolved_ids.append(None)
+
+        def scan_locked():
+            """Collect matching entries per key. Assumes streams_lock held."""
+            results = []
+            for key, start_id in zip(keys, resolved_ids):
+                matched = []
+                for entry in streams.get(key, []):
+                    eid = parse_stream_id(entry[0])
+                    if eid is not None and eid > start_id:  # exclusive
+                        matched.append(entry)
+                        if count is not None and len(matched) >= count:
+                            break
+                if matched:
+                    body = b"".join(encode_stream_entry(e) for e in matched)
+                    results.append(
+                        b"*2\r\n"
+                        + encode_bulk_string(key)
+                        + b"*" + str(len(matched)).encode() + b"\r\n"
+                        + body
+                    )
+            return results
+
+        def encode_results(results):
+            if not results:
+                return b"*-1\r\n"  # null array when no stream had entries
+            return b"*" + str(len(results)).encode() + b"\r\n" + b"".join(results)
+
+        with streams_lock:
+            for idx, id_arg in enumerate(ids):
+                if id_arg == b"$":
+                    # Only entries added after this command can match.
+                    entries = streams.get(keys[idx], [])
+                    resolved_ids.append(
+                        parse_stream_id(entries[-1][0]) if entries else (0, 0)
+                    )
+                else:
+                    start_id = parse_stream_id(id_arg)
+                    if start_id is None:
+                        return (
+                            b"-ERR Invalid stream ID specified as "
+                            b"stream command argument\r\n"
+                        )
+                    resolved_ids.append(start_id)
+            results = scan_locked()
+
+        if results or block_ms is None:
+            return encode_results(results)
+
+        # Blocking mode: wait for an XADD, re-scanning after every wake-up.
+        # block_ms == 0 blocks indefinitely.
+        deadline = None if block_ms <= 0 else time.monotonic() + block_ms / 1000.0
+        while True:
+            waiter = _XreadWaiter()
+            with streams_lock:
+                # Register before scanning so an XADD racing with us cannot
+                # be missed: it either lands before the scan or wakes us.
+                xread_waiters.append(waiter)
+                results = scan_locked()
+                if results:
+                    xread_waiters.remove(waiter)
+            if results:
+                break
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                with streams_lock:
+                    try:
+                        xread_waiters.remove(waiter)
+                    except ValueError:
+                        pass
+                return b"*-1\r\n"
+            waiter.event.wait(remaining)
+        return encode_results(results)
     return b"-ERR unknown command\r\n"
 
 
