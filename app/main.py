@@ -142,6 +142,15 @@ def execute_command(args):
         with lists_lock:
             length = len(lists.get(args[1], []))
         return b":" + str(length).encode() + b"\r\n"
+    if command == "lpop" and len(args) >= 2:
+        with lists_lock:
+            lst = lists.get(args[1])
+            if not lst:
+                return b"$-1\r\n"
+            value = lst.pop(0)
+            if not lst:  # drop empty lists, like real Redis
+                del lists[args[1]]
+        return encode_bulk_string(value)
     if command == "lrange" and len(args) >= 4:
         key = args[1]
         try:
