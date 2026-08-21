@@ -219,8 +219,9 @@ def execute_command(args, tx=None):
         tx["queue"] = []
         return b"+OK\r\n"
     if command == "watch" and len(args) >= 2:
-        # Optimistic locking: remember watched keys per connection.
-        # Abort-on-modified behavior comes in later stages.
+        # Optimistic locking: WATCH is only allowed outside a transaction.
+        if tx is not None and tx.get("active"):
+            return b"-ERR WATCH inside MULTI is not allowed\r\n"
         if tx is not None:
             tx.setdefault("watched", set()).update(args[1:])
         return b"+OK\r\n"
