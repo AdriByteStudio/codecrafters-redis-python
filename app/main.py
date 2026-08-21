@@ -192,6 +192,9 @@ def execute_command(args):
     command = args[0].decode("utf-8", "replace").lower() if args else ""
     if command == "ping":
         return b"+PONG\r\n"
+    if command == "multi":
+        # Starts a transaction; queuing & EXEC come in later stages.
+        return b"+OK\r\n"
     if command == "echo":
         value = args[1] if len(args) > 1 else b""
         return encode_bulk_string(value)
