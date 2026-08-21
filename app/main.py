@@ -17,6 +17,12 @@ lists_lock = threading.Lock()
 # Blocked BLPOP clients, FIFO per list key (longest-waiting first).
 blpop_waiters = {}  # key -> deque of _BlpopWaiter
 
+# In-memory streams shared by all client connections.
+# Maps key -> list of entries in chronological order,
+# where each entry is (id_bytes, [(field_bytes, value_bytes), ...]).
+streams = {}
+streams_lock = threading.Lock()
+
 
 class _BlpopWaiter:
     def __init__(self):
@@ -248,9 +254,21 @@ def execute_command(args):
         with lists_lock:
             if key in lists:
                 return b"+list\r\n"
+        with streams_lock:
+            if key in streams:
+                return b"+stream\r\n"
         if get_live_value(key) is not None:
             return b"+string\r\n"
         return b"+none\r\n"
+    if command == "xadd" and len(args) >= 5:
+        key, entry_id = args[1], args[2]
+        pairs = args[3:]
+        if len(pairs) % 2 != 0:
+            return b"-ERR wrong number of arguments for 'xadd' command\r\n"
+        fields = list(zip(pairs[0::2], pairs[1::2]))
+        with streams_lock:
+            streams.setdefault(key, []).append((entry_id, fields))
+        return encode_bulk_string(entry_id)
     return b"-ERR unknown command\r\n"
 
 
