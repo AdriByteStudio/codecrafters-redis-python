@@ -73,6 +73,13 @@ def encode_bulk_string(value: bytes) -> bytes:
     return b"$" + str(len(value)).encode() + b"\r\n" + value + b"\r\n"
 
 
+def encode_resp_array(values) -> bytes:
+    """Encode a sequence of byte strings as a RESP array."""
+    return b"*" + str(len(values)).encode() + b"\r\n" + b"".join(
+        encode_bulk_string(v) for v in values
+    )
+
+
 def execute_command(args):
     """Execute a parsed command (list of byte-string arguments)."""
     command = args[0].decode("utf-8", "replace").lower() if args else ""
@@ -111,6 +118,17 @@ def execute_command(args):
             lst.extend(values)
             length = len(lst)
         return b":" + str(length).encode() + b"\r\n"
+    if command == "lrange" and len(args) >= 4:
+        key = args[1]
+        try:
+            start, stop = int(args[2]), int(args[3])
+        except ValueError:
+            return b"-ERR value is not an integer or out of range\r\n"
+        # Python slicing covers all required rules: start > stop or
+        # start >= len -> empty; stop >= len -> clamped to last element.
+        with lists_lock:
+            elements = lists.get(key, [])[start:stop + 1]
+        return encode_resp_array(elements)
     return b"-ERR unknown command\r\n"
 
 
