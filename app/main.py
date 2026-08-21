@@ -128,6 +128,16 @@ def execute_command(args):
             lst.extend(values)
             length = len(lst)
         return b":" + str(length).encode() + b"\r\n"
+    if command == "lpush" and len(args) >= 3:
+        key, values = args[1], args[2:]
+        with lists_lock:
+            lst = lists.setdefault(key, [])
+            # Push elements one by one so the last listed value ends up
+            # at the head: LPUSH k a b c -> [c, b, a].
+            for value in values:
+                lst.insert(0, value)
+            length = len(lst)
+        return b":" + str(length).encode() + b"\r\n"
     if command == "lrange" and len(args) >= 4:
         key = args[1]
         try:
