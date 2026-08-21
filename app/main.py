@@ -195,6 +195,9 @@ def execute_command(args):
     if command == "multi":
         # Starts a transaction; queuing & EXEC come in later stages.
         return b"+OK\r\n"
+    if command == "exec":
+        # Queueing isn't implemented yet, so MULTI was never called.
+        return b"-ERR EXEC without MULTI\r\n"
     if command == "echo":
         value = args[1] if len(args) > 1 else b""
         return encode_bulk_string(value)
