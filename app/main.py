@@ -32,6 +32,15 @@ class _BlpopWaiter:
         self.value = None
 
 
+class _XreadWaiter:
+    def __init__(self):
+        self.event = threading.Event()
+
+
+# Blocked XREAD clients; every XADD wakes them all and each re-scans.
+xread_waiters = []
+
+
 def serve_blpop_waiters(key):
     """Hand list elements directly to blocked BLPOP clients (FIFO).
     Must be called with lists_lock held."""
@@ -436,11 +445,6 @@ def execute_command(args):
 
         # Resolve IDs once, up front ('$' = last entry id at command time).
         resolved_ids = []
-        with streams_lock:
-            for id_arg in ids:
-                if id_arg == b"$":
-                    entries = streams.get(key_for_$ := None, [])  # placeholder
-                resolved_ids.append(None)
 
         def scan_locked():
             """Collect matching entries per key. Assumes streams_lock held."""
