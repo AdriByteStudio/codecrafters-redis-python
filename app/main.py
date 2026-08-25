@@ -668,6 +668,18 @@ def execute_command(args, tx=None):
             zset.sort(key=lambda x: (x[0], x[1]))
         mark_key_dirty(key)
         return b":" + str(added).encode() + b"\r\n"
+    if command == "zrank" and len(args) >= 3:
+        key = args[1]
+        member = args[2]
+        with sorted_sets_lock:
+            zset = sorted_sets.get(key)
+            if zset is None:
+                return b"$-1\r\n"
+            # zset is sorted by (score, member), so index = rank
+            for i, (s, m) in enumerate(zset):
+                if m == member:
+                    return b":" + str(i).encode() + b"\r\n"
+            return b"$-1\r\n"
     if command == "lpush" and len(args) >= 3:
         key, values = args[1], args[2:]
         with lists_lock:
