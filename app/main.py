@@ -1146,11 +1146,11 @@ def main():
                 aof_data = f.read()
             buf = aof_data
             while buf:
-                args, buf = parse_resp_array(buf)
-                if args is None:
+                cmd_args, buf = parse_resp_array(buf)
+                if cmd_args is None:
                     break
                 try:
-                    execute_command(args)
+                    execute_command(cmd_args)
                 except Exception:
                     pass  # skip malformed commands
     if args.replicaof is not None:
