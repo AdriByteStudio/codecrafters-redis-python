@@ -295,6 +295,10 @@ def execute_command(args, tx=None):
     if command == "echo":
         value = args[1] if len(args) > 1 else b""
         return encode_bulk_string(value)
+    if command == "info":
+        section = args[1].decode("utf-8", "replace").lower() if len(args) > 1 else ""
+        if section == "replication" or section == "":
+            return encode_bulk_string(b"role:master")
     if command == "set" and len(args) >= 3:
         expires_at = None
         i = 3
