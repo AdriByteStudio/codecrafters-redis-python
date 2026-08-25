@@ -680,6 +680,22 @@ def execute_command(args, tx=None):
                 if m == member:
                     return b":" + str(i).encode() + b"\r\n"
             return b"$-1\r\n"
+    if command == "zrange" and len(args) >= 4:
+        key = args[1]
+        start = int(args[2])
+        stop = int(args[3])
+        with sorted_sets_lock:
+            zset = sorted_sets.get(key)
+            if zset is None:
+                return b"*0\r\n"
+            # Only non-negative indexes; start clamped to cardinality
+            if start >= len(zset):
+                return b"*0\r\n"
+            end = min(stop, len(zset) - 1)
+            if start > stop:
+                return b"*0\r\n"
+            members = [m for _, m in zset[start:end + 1]]
+            return encode_resp_array(members)
     if command == "lpush" and len(args) >= 3:
         key, values = args[1], args[2:]
         with lists_lock:
