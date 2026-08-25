@@ -2,6 +2,7 @@ import socket
 import threading
 import time
 import os
+import math
 from collections import deque
 
 # Empty RDB file (hex) - used for full resynchronization
@@ -363,7 +364,7 @@ def encode_resp_array(values) -> bytes:
 
 # Write commands that should be propagated to replicas.
 WRITE_COMMANDS = {"set", "del", "lpush", "rpush", "lpop", "rpop",
-                  "incr", "decr", "incrby", "decrby", "zadd"}
+                  "incr", "decr", "incrby", "decrby", "zadd", "geoadd"}
 
 
 def append_to_aof(args):
@@ -712,6 +713,38 @@ def execute_command(args, tx=None):
                         break
         mark_key_dirty(key)
         return b":" + str(removed).encode() + b"\r\n"
+    if command == "geoadd" and len(args) >= 5:
+        key = args[1]
+        lon = float(args[2])
+        lat = float(args[3])
+        member = args[4]
+        # Encode lon/lat into a geohash score (interleaved bits)
+        def geo_score(lon, lat):
+            lat_norm = (lat + 85.05112878) / (2.0 * 85.05112878)
+            lon_norm = (lon + 180.0) / 360.0
+            lat_int = int(lat_norm * (1 << 32))
+            lon_int = int(lon_norm * (1 << 32))
+            # Interleave bits: lon in even positions, lat in odd positions
+            h = 0
+            for i in range(31, -1, -1):
+                h |= ((lon_int >> i) & 1) << (2 * i + 1)
+                h |= ((lat_int >> i) & 1) << (2 * i)
+            return float(h)
+        score = geo_score(lon, lat)
+        added = 0
+        with sorted_sets_lock:
+            zset = sorted_sets.setdefault(key, [])
+            existing = {m: s for s, m in zset}
+            if member in existing:
+                # Update score
+                existing[member] = score
+                sorted_sets[key] = [(s, m) for m, s in sorted(existing.items(), key=lambda x: (x[1], x[0]))]
+            else:
+                zset.append((score, member))
+                zset.sort(key=lambda x: (x[0], x[1]))
+                added = 1
+        mark_key_dirty(key)
+        return b":" + str(added).encode() + b"\r\n"
     if command == "zrange" and len(args) >= 4:
         key = args[1]
         start = int(args[2])
