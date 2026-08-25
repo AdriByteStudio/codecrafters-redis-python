@@ -698,6 +698,20 @@ def execute_command(args, tx=None):
                 if m == member:
                     return encode_bulk_string(str(s).encode())
             return b"$-1\r\n"
+    if command == "zrem" and len(args) >= 3:
+        key = args[1]
+        member = args[2]
+        removed = 0
+        with sorted_sets_lock:
+            zset = sorted_sets.get(key)
+            if zset is not None:
+                for i, (s, m) in enumerate(zset):
+                    if m == member:
+                        zset.pop(i)
+                        removed = 1
+                        break
+        mark_key_dirty(key)
+        return b":" + str(removed).encode() + b"\r\n"
     if command == "zrange" and len(args) >= 4:
         key = args[1]
         start = int(args[2])
