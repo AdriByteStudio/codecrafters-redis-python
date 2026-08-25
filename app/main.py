@@ -51,6 +51,157 @@ watched_keys = {}
 watched_lock = threading.Lock()
 
 
+def load_rdb_file(filepath):
+    """Parse a Redis RDB file and populate the in-memory store.
+
+    Handles the subset of RDB format needed for this challenge:
+    - Header (REDIS0011)
+    - Metadata subsections (FA ...)
+    - Database subsections (FE ...) with hash table sizes (FB ...)
+    - Key-value entries with optional expiry (FC/FD) and string values (type 0x00)
+    - End-of-file marker (FF)
+
+    String encoding supports:
+    - Standard size-prefixed strings (sizes 0b00, 0b01, 0b10)
+    - 8-bit integer  (0xC0) -> str(int)
+    - 16-bit integer (0xC1) -> str(int)
+    - 32-bit integer (0xC2) -> str(int)
+    """
+    try:
+        with open(filepath, "rb") as f:
+            data = f.read()
+    except FileNotFoundError:
+        return
+
+    if len(data) < 9:
+        return
+
+    # Validate header: "REDIS0011"
+    if data[:9] != b"REDIS0011":
+        return
+
+    pos = 9
+
+    def read_length(data, pos):
+        """Read a length-encoded value. Returns (length, new_pos)."""
+        if pos >= len(data):
+            return None, pos
+        first = data[pos]
+        type_bits = (first >> 6) & 0b11
+        if type_bits == 0b00:
+            return first & 0x3F, pos + 1
+        elif type_bits == 0b01:
+            if pos + 1 >= len(data):
+                return None, pos
+            length = ((first & 0x3F) << 8) | data[pos + 1]
+            return length, pos + 2
+        elif type_bits == 0b10:
+            if pos + 4 >= len(data):
+                return None, pos
+            length = int.from_bytes(data[pos + 1:pos + 5], "big")
+            return length, pos + 5
+        else:
+            # 0b11: special string encoding, return the type bits
+            return (first & 0x3F), pos
+
+    def read_string_encoded(data, pos):
+        """Read a string-encoded value. Returns (string_bytes, new_pos)."""
+        if pos >= len(data):
+            return None, pos
+        first = data[pos]
+        type_bits = (first >> 6) & 0b11
+        if type_bits == 0b11:
+            special_type = first & 0x3F
+            if special_type == 0:  # 0xC0: 8-bit integer
+                if pos + 1 >= len(data):
+                    return None, pos
+                val = data[pos + 1]
+                return str(val).encode(), pos + 2
+            elif special_type == 1:  # 0xC1: 16-bit integer
+                if pos + 2 >= len(data):
+                    return None, pos
+                val = int.from_bytes(data[pos + 1:pos + 3], "little")
+                return str(val).encode(), pos + 3
+            elif special_type == 2:  # 0xC2: 32-bit integer
+                if pos + 4 >= len(data):
+                    return None, pos
+                val = int.from_bytes(data[pos + 1:pos + 5], "little")
+                return str(val).encode(), pos + 5
+            elif special_type == 3:  # 0xC3: LZF compressed (not needed)
+                return None, pos
+        else:
+            length, pos = read_length(data, pos)
+            if length is None or pos + length > len(data):
+                return None, pos
+            return data[pos:pos + length], pos + length
+
+    while pos < len(data):
+        byte = data[pos]
+        if byte == 0xFF:  # End of file
+            break
+        elif byte == 0xFA:  # Metadata subsection
+            pos += 1
+            # Skip metadata name and value (both string encoded)
+            _, pos = read_string_encoded(data, pos)
+            _, pos = read_string_encoded(data, pos)
+        elif byte == 0xFE:  # Database subsection
+            pos += 1
+            # Database index (size encoded)
+            _, pos = read_length(data, pos)
+        elif byte == 0xFB:  # Hash table size info
+            pos += 1
+            # Hash table size (size encoded)
+            _, pos = read_length(data, pos)
+            # Expire hash table size (size encoded)
+            _, pos = read_length(data, pos)
+        elif byte == 0xFC:  # Expire in milliseconds
+            pos += 1
+            if pos + 8 > len(data):
+                break
+            expires_ms = int.from_bytes(data[pos:pos + 8], "little")
+            pos += 8
+            # Value type byte follows
+            if pos >= len(data):
+                break
+            value_type = data[pos]
+            pos += 1
+            if value_type == 0x00:  # String type
+                key, pos = read_string_encoded(data, pos)
+                value, pos = read_string_encoded(data, pos)
+                if key is not None and value is not None:
+                    # Convert ms timestamp to monotonic deadline
+                    deadline = time.monotonic() + (expires_ms - time.time() * 1000) / 1000.0
+                    with store_lock:
+                        store[key] = (value, deadline)
+        elif byte == 0xFD:  # Expire in seconds
+            pos += 1
+            if pos + 4 > len(data):
+                break
+            expires_s = int.from_bytes(data[pos:pos + 4], "little")
+            pos += 4
+            if pos >= len(data):
+                break
+            value_type = data[pos]
+            pos += 1
+            if value_type == 0x00:
+                key, pos = read_string_encoded(data, pos)
+                value, pos = read_string_encoded(data, pos)
+                if key is not None and value is not None:
+                    deadline = time.monotonic() + (expires_s * 1000 - time.time() * 1000) / 1000.0
+                    with store_lock:
+                        store[key] = (value, deadline)
+        elif byte == 0x00:  # String value type (no expiry)
+            pos += 1
+            key, pos = read_string_encoded(data, pos)
+            value, pos = read_string_encoded(data, pos)
+            if key is not None and value is not None:
+                with store_lock:
+                    store[key] = (value, None)
+        else:
+            # Unknown byte, skip (shouldn't happen in well-formed RDB)
+            pos += 1
+
+
 class _Watcher:
     """Per-connection WATCH registration (hashable, so it can live in
     the watched_keys sets)."""
@@ -395,6 +546,12 @@ def execute_command(args, tx=None):
             elif param == "dbfilename":
                 value = config_dbfilename
             return encode_resp_array([param.encode(), value.encode()])
+    if command == "keys" and len(args) >= 2:
+        pattern = args[1].decode("utf-8", "replace")
+        if pattern == "*":
+            with store_lock:
+                keys = list(store.keys())
+            return encode_resp_array(keys)
     if command == "set" and len(args) >= 3:
         expires_at = None
         i = 3
@@ -918,6 +1075,10 @@ def main():
     global server_role, config_dir, config_dbfilename
     config_dir = args.dir
     config_dbfilename = args.dbfilename
+    # Load RDB file on startup
+    import os
+    rdb_path = os.path.join(config_dir, config_dbfilename)
+    load_rdb_file(rdb_path)
     if args.replicaof is not None:
         server_role = "slave"
         # Parse "host port" and connect to the master
