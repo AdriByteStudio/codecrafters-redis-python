@@ -724,17 +724,24 @@ def execute_command(args, tx=None):
         if lat < -85.05112878 or lat > 85.05112878:
             return b"-ERR invalid longitude,latitude pair\r\n"
         # Encode lon/lat into a geohash score (interleaved bits)
+        def spread(v):
+            v &= 0xFFFFFFFF
+            v = (v | (v << 16)) & 0x0000FFFF0000FFFF
+            v = (v | (v << 8)) & 0x00FF00FF00FF00FF
+            v = (v | (v << 4)) & 0x0F0F0F0F0F0F0F0F
+            v = (v | (v << 2)) & 0x3333333333333333
+            v = (v | (v << 1)) & 0x5555555555555555
+            return v
         def geo_score(lon, lat):
-            lat_norm = (lat + 85.05112878) / (2.0 * 85.05112878)
-            lon_norm = (lon + 180.0) / 360.0
-            lat_int = int(lat_norm * (1 << 32))
-            lon_int = int(lon_norm * (1 << 32))
-            # Interleave bits: lon in even positions, lat in odd positions
-            h = 0
-            for i in range(31, -1, -1):
-                h |= ((lon_int >> i) & 1) << (2 * i + 1)
-                h |= ((lat_int >> i) & 1) << (2 * i)
-            return float(h)
+            MIN_LAT = -85.05112878
+            MAX_LAT = 85.05112878
+            MIN_LON = -180.0
+            MAX_LON = 180.0
+            LAT_RANGE = MAX_LAT - MIN_LAT
+            LON_RANGE = MAX_LON - MIN_LON
+            lat_norm = int((1 << 26) * (lat - MIN_LAT) / LAT_RANGE)
+            lon_norm = int((1 << 26) * (lon - MIN_LON) / LON_RANGE)
+            return float(spread(lat_norm) | (spread(lon_norm) << 1))
         score = geo_score(lon, lat)
         added = 0
         with sorted_sets_lock:
