@@ -1,6 +1,7 @@
 import socket
 import threading
 import time
+import os
 from collections import deque
 
 # Empty RDB file (hex) - used for full resynchronization
@@ -17,8 +18,14 @@ store_lock = threading.Lock()
 server_role = "master"
 
 # RDB persistence config (set via CLI args).
-config_dir = "/tmp/redis-files"
+config_dir = os.getcwd()
 config_dbfilename = "dump.rdb"
+
+# AOF persistence config defaults.
+config_appendonly = "no"
+config_appenddirname = "appendonlydir"
+config_appendfilename = "appendonly.aof"
+config_appendfsync = "everysec"
 
 # Connected replicas (list of socket objects for propagation).
 replica_connections = []
@@ -545,6 +552,14 @@ def execute_command(args, tx=None):
                 value = config_dir
             elif param == "dbfilename":
                 value = config_dbfilename
+            elif param == "appendonly":
+                value = config_appendonly
+            elif param == "appenddirname":
+                value = config_appenddirname
+            elif param == "appendfilename":
+                value = config_appendfilename
+            elif param == "appendfsync":
+                value = config_appendfsync
             return encode_resp_array([param.encode(), value.encode()])
     if command == "keys" and len(args) >= 2:
         pattern = args[1].decode("utf-8", "replace")
@@ -1068,7 +1083,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=6379)
     parser.add_argument("--replicaof", type=str, default=None)
-    parser.add_argument("--dir", type=str, default="/tmp/redis-files")
+    parser.add_argument("--dir", type=str, default=os.getcwd())
     parser.add_argument("--dbfilename", type=str, default="dump.rdb")
     args = parser.parse_args()
 
@@ -1076,7 +1091,6 @@ def main():
     config_dir = args.dir
     config_dbfilename = args.dbfilename
     # Load RDB file on startup
-    import os
     rdb_path = os.path.join(config_dir, config_dbfilename)
     load_rdb_file(rdb_path)
     if args.replicaof is not None:
