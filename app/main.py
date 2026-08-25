@@ -3,6 +3,10 @@ import threading
 import time
 from collections import deque
 
+# Empty RDB file (hex) - used for full resynchronization
+EMPTY_RDB_HEX = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2"
+EMPTY_RDB = bytes.fromhex(EMPTY_RDB_HEX)
+
 # In-memory key-value store shared by all client connections.
 # Maps key -> (value_bytes, expires_at_ms) where expires_at_ms is a
 # time.monotonic() deadline in ms, or None if the key never expires.
@@ -682,7 +686,14 @@ def handle_connection(conn):
                     args, buffer = parse_resp_array(buffer)
                     if args is None:
                         break
-                    conn.sendall(execute_command(args, tx))
+                    response = execute_command(args, tx)
+                    conn.sendall(response)
+                    # After PSYNC, send the empty RDB file
+                    if args and args[0].decode("utf-8", "replace").lower() == "psync":
+                        rdb_payload = (
+                            b"$" + str(len(EMPTY_RDB)).encode() + b"\r\n" + EMPTY_RDB
+                        )
+                        conn.sendall(rdb_payload)
         except (ConnectionResetError, BrokenPipeError):
             pass  # client disconnected abruptly
         finally:
