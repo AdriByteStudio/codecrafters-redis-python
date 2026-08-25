@@ -659,13 +659,15 @@ def execute_command(args, tx=None):
             while i + 1 < len(args):
                 score = float(args[i])
                 member = args[i + 1]
-                if member not in existing:
-                    zset.append((score, member))
+                if member in existing:
+                    # Update score of existing member
+                    existing[member] = score
+                else:
                     existing[member] = score
                     added += 1
                 i += 2
-            # Keep sorted by score, then by member for stable ordering
-            zset.sort(key=lambda x: (x[0], x[1]))
+            # Rebuild zset from existing dict (handles score updates) and sort
+            sorted_sets[key] = [(s, m) for m, s in sorted(existing.items(), key=lambda x: (x[1], x[0]))]
         mark_key_dirty(key)
         return b":" + str(added).encode() + b"\r\n"
     if command == "zrank" and len(args) >= 3:
@@ -680,6 +682,11 @@ def execute_command(args, tx=None):
                 if m == member:
                     return b":" + str(i).encode() + b"\r\n"
             return b"$-1\r\n"
+    if command == "zcard" and len(args) >= 2:
+        key = args[1]
+        with sorted_sets_lock:
+            zset = sorted_sets.get(key)
+            return b":" + str(len(zset) if zset else 0).encode() + b"\r\n"
     if command == "zrange" and len(args) >= 4:
         key = args[1]
         start = int(args[2])
