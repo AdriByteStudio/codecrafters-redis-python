@@ -673,10 +673,15 @@ def handle_connection(conn):
 
 
 def main():
-    # You can use print statements as follows for debugging, they'll be visible when running tests.
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=6379)
+    args = parser.parse_args()
+
     print("Logs from your program will appear here!")
 
-    server_socket = socket.create_server(("localhost", 6379), reuse_port=True)
+    server_socket = socket.create_server(("localhost", args.port), reuse_port=True)
 
     while True:
         conn, _addr = server_socket.accept()  # wait for client
