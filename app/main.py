@@ -982,9 +982,12 @@ def handle_connection(conn):
                                     1 for subs in channels_subscribers.values()
                                     if conn_id in subs
                                 )
-                            resp = encode_resp_array([
-                                b"subscribe", ch, str(client_count).encode()
-                            ])
+                            resp = (
+                                b"*3\r\n"
+                                + b"$9\r\nsubscribe\r\n"
+                                + b"$" + str(len(ch)).encode() + b"\r\n" + ch + b"\r\n"
+                                + b":" + str(client_count).encode() + b"\r\n"
+                            )
                             conn.sendall(resp)
                         continue  # skip normal execute_command
                     response = execute_command(args, tx)
