@@ -688,12 +688,15 @@ def execute_command(args, tx=None):
             zset = sorted_sets.get(key)
             if zset is None:
                 return b"*0\r\n"
-            # Only non-negative indexes; start clamped to cardinality
-            if start >= len(zset):
+            n = len(zset)
+            # Convert negative indexes: if abs(neg) >= cardinality, treat as 0.
+            if start < 0:
+                start = max(0, n + start)
+            if stop < 0:
+                stop = max(0, n + stop)
+            if start >= n or start > stop:
                 return b"*0\r\n"
-            end = min(stop, len(zset) - 1)
-            if start > stop:
-                return b"*0\r\n"
+            end = min(stop, n - 1)
             members = [m for _, m in zset[start:end + 1]]
             return encode_resp_array(members)
     if command == "lpush" and len(args) >= 3:
