@@ -16,6 +16,10 @@ store_lock = threading.Lock()
 # Server role: "master" by default, "slave" when --replicaof is set.
 server_role = "master"
 
+# RDB persistence config (set via CLI args).
+config_dir = "/tmp/redis-files"
+config_dbfilename = "dump.rdb"
+
 # Connected replicas (list of socket objects for propagation).
 replica_connections = []
 replica_connections_lock = threading.Lock()
@@ -381,6 +385,16 @@ def execute_command(args, tx=None):
                 "master_repl_offset:0",
             ]
             return encode_bulk_string("\r\n".join(lines).encode())
+    if command == "config" and len(args) >= 3:
+        sub = args[1].decode("utf-8", "replace").lower()
+        if sub == "get":
+            param = args[2].decode("utf-8", "replace").lower()
+            value = ""
+            if param == "dir":
+                value = config_dir
+            elif param == "dbfilename":
+                value = config_dbfilename
+            return encode_resp_array([param.encode(), value.encode()])
     if command == "set" and len(args) >= 3:
         expires_at = None
         i = 3
@@ -897,9 +911,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=6379)
     parser.add_argument("--replicaof", type=str, default=None)
+    parser.add_argument("--dir", type=str, default="/tmp/redis-files")
+    parser.add_argument("--dbfilename", type=str, default="dump.rdb")
     args = parser.parse_args()
 
-    global server_role
+    global server_role, config_dir, config_dbfilename
+    config_dir = args.dir
+    config_dbfilename = args.dbfilename
     if args.replicaof is not None:
         server_role = "slave"
         # Parse "host port" and connect to the master
