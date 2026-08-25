@@ -1359,8 +1359,8 @@ def handle_connection(conn):
                                 pass
                         conn.sendall(b":" + str(len(subscribers)).encode() + b"\r\n")
                         continue
-                    # Authentication check: allow auth/acl without auth
-                    if not authenticated and command not in ("auth", "acl"):
+                    # Authentication check: only allow auth without auth
+                    if not authenticated and command != "auth":
                         conn.sendall(b"-NOAUTH Authentication required.\r\n")
                         continue
                     response = execute_command(args, tx)
