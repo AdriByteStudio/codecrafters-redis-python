@@ -832,6 +832,42 @@ def execute_command(args, tx=None):
         dist = R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
         result = f"{dist:.4f}".encode()
         return b"$" + str(len(result)).encode() + b"\r\n" + result + b"\r\n"
+    if command == "geosearch" and len(args) >= 8:
+        # GEOSEARCH key FROMLONLAT lon lat BYRADIUS radius unit
+        key = args[1]
+        # Parse FROMLONLAT lon lat
+        fromlon = float(args[3])
+        fromlat = float(args[4])
+        # Parse BYRADIUS radius unit
+        radius = float(args[6])
+        unit = args[7].decode("utf-8", "replace").lower()
+        # Convert radius to meters
+        if unit == "km":
+            radius_m = radius * 1000
+        elif unit == "mi":
+            radius_m = radius * 1609.344
+        elif unit == "ft":
+            radius_m = radius * 0.3048
+        else:  # m
+            radius_m = radius
+        R = 6372797.560856
+        fromlat_r = math.radians(fromlat)
+        with sorted_sets_lock:
+            zset = sorted_sets.get(key)
+        if zset is None:
+            return b"*0\r\n"
+        matches = []
+        for score, member in zset:
+            lon, lat = geo_decode(score)
+            # Haversine distance
+            lat_r = math.radians(lat)
+            dlat = math.radians(lat - fromlat)
+            dlon = math.radians(lon - fromlon)
+            a = math.sin(dlat / 2) ** 2 + math.cos(fromlat_r) * math.cos(lat_r) * math.sin(dlon / 2) ** 2
+            dist = R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+            if dist <= radius_m:
+                matches.append(member)
+        return encode_resp_array(matches)
     if command == "zrange" and len(args) >= 4:
         key = args[1]
         start = int(args[2])
