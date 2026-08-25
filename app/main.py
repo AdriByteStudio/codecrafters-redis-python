@@ -764,7 +764,61 @@ def handshake_with_master(master_host: str, master_port: int, replica_port: int)
     response = master_conn.recv(1024)
     print(f"Master responded to PSYNC: {response}")
 
-    return master_conn
+    # The recv above may have included the RDB file (and even commands) beyond
+    # the +FULLRESYNC\r\n line.  Strip the FULLRESYNC response and keep the rest.
+    fullresync_end = response.find(b"\r\n")
+    buffer = response[fullresync_end + 2:] if fullresync_end != -1 else b""
+
+    # After handshake, read and process commands from the master (no responses sent)
+    rdb_remaining = -1  # bytes of RDB payload still to read (-1 = not in RDB)
+    while True:
+        try:
+            # Process whatever is in the buffer first
+            progress = True
+            while progress:
+                progress = False
+                # If we're inside an RDB payload, skip those bytes first
+                if rdb_remaining >= 0:
+                    if len(buffer) <= rdb_remaining:
+                        rdb_remaining -= len(buffer)
+                        buffer = b""
+                    else:
+                        buffer = buffer[rdb_remaining:]
+                        rdb_remaining = -1
+                    progress = True
+                    continue
+                # Check if buffer starts with an RDB bulk string ($<len>\r\n<contents>)
+                if buffer.startswith(b"$"):
+                    line_end = buffer.find(b"\r\n")
+                    if line_end == -1:
+                        break  # need more data
+                    try:
+                        rdb_len = int(buffer[1:line_end])
+                    except ValueError:
+                        break
+                    payload_start = line_end + 2
+                    if len(buffer) < payload_start + rdb_len:
+                        rdb_remaining = rdb_len - (len(buffer) - payload_start)
+                        buffer = b""
+                    else:
+                        buffer = buffer[payload_start + rdb_len:]
+                    progress = True
+                    continue
+                args, buffer = parse_resp_array(buffer)
+                if args is None:
+                    break
+                execute_command(args)
+                # Don't send any response back to the master
+                progress = True
+            # Buffer exhausted — wait for more data from master
+            data = master_conn.recv(1024)
+            if not data:
+                break
+            buffer += data
+        except (ConnectionResetError, BrokenPipeError):
+            break
+
+    master_conn.close()
 
 
 def main():
