@@ -547,6 +547,8 @@ def execute_command(args, tx=None):
         return b"+QUEUED\r\n"
     if command == "ping":
         return b"+PONG\r\n"
+    if command == "acl" and len(args) >= 2 and args[1].decode("utf-8", "replace").lower() == "whoami":
+        return encode_bulk_string(b"default")
     if command == "replconf":
         # Handle REPLCONF GETACK: respond with REPLCONF ACK <offset>
         if len(args) >= 2 and args[1].decode("utf-8", "replace").lower() == "getack":
