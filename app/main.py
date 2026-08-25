@@ -321,6 +321,9 @@ def execute_command(args, tx=None):
     if command == "ping":
         return b"+PONG\r\n"
     if command == "replconf":
+        # Handle REPLCONF GETACK: respond with REPLCONF ACK <offset>
+        if len(args) >= 2 and args[1].decode("utf-8", "replace").lower() == "getack":
+            return encode_resp_array([b"REPLCONF", b"ACK", b"0"])
         return b"+OK\r\n"
     if command == "psync":
         repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
@@ -807,7 +810,17 @@ def handshake_with_master(master_host: str, master_port: int, replica_port: int)
                 args, buffer = parse_resp_array(buffer)
                 if args is None:
                     break
-                execute_command(args)
+                command = args[0].decode("utf-8", "replace").lower() if args else ""
+                if command == "replconf" and len(args) >= 2:
+                    sub = args[1].decode("utf-8", "replace").lower()
+                    if sub == "getack":
+                        # Respond with REPLCONF ACK <offset>
+                        ack_resp = encode_resp_array(
+                            [b"REPLCONF", b"ACK", b"0"]
+                        )
+                        master_conn.sendall(ack_resp)
+                else:
+                    execute_command(args)
                 # Don't send any response back to the master
                 progress = True
             # Buffer exhausted — wait for more data from master
