@@ -1121,21 +1121,25 @@ def main():
     if config_appendonly == "yes":
         aof_dir = os.path.join(config_dir, config_appenddirname)
         os.makedirs(aof_dir, exist_ok=True)
+        # Only create default AOF file and manifest if they don't already exist
         aof_name = f"{config_appendfilename}.1.incr.aof"
         aof_path = os.path.join(aof_dir, aof_name)
-        with open(aof_path, "a") as f:
-            pass  # create empty file if it doesn't exist
+        if not os.path.exists(aof_path):
+            with open(aof_path, "w") as f:
+                pass
         manifest_path = os.path.join(aof_dir, f"{config_appendfilename}.manifest")
-        with open(manifest_path, "w") as f:
-            f.write(f"file {aof_name} seq 1 type i\n")
+        if not os.path.exists(manifest_path):
+            with open(manifest_path, "w") as f:
+                f.write(f"file {aof_name} seq 1 type i\n")
         # Read manifest to find the active incremental AOF file
         global aof_file_path
-        with open(manifest_path, "r") as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) >= 5 and parts[0] == "file" and parts[4] == "i":
-                    aof_file_path = os.path.join(aof_dir, parts[1])
-                    break
+        if os.path.exists(manifest_path):
+            with open(manifest_path, "r") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 5 and parts[0] == "file" and parts[4] == "i":
+                        aof_file_path = os.path.join(aof_dir, parts[1])
+                        break
     if args.replicaof is not None:
         server_role = "slave"
         # Parse "host port" and connect to the master
