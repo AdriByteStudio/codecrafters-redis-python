@@ -550,12 +550,14 @@ def execute_command(args, tx=None):
     if command == "acl" and len(args) >= 2 and args[1].decode("utf-8", "replace").lower() == "whoami":
         return encode_bulk_string(b"default")
     if command == "acl" and len(args) >= 3 and args[1].decode("utf-8", "replace").lower() == "getuser":
-        # ACL GETUSER username — return ["flags", []] for default user
+        # ACL GETUSER username — return ["flags", ["nopass"]] for default user
         flags_b = b"flags"
+        nopass_b = b"nopass"
         return (
             b"*2\r\n"
             + b"$" + str(len(flags_b)).encode() + b"\r\n" + flags_b + b"\r\n"
-            + b"*0\r\n"
+            + b"*1\r\n"
+            + b"$" + str(len(nopass_b)).encode() + b"\r\n" + nopass_b + b"\r\n"
         )
     if command == "replconf":
         # Handle REPLCONF GETACK: respond with REPLCONF ACK <offset>
