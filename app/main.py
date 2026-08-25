@@ -1140,6 +1140,19 @@ def main():
                     if len(parts) >= 6 and parts[0] == "file" and parts[4] == "type" and parts[5] == "i":
                         aof_file_path = os.path.join(aof_dir, parts[1])
                         break
+        # Replay the AOF file to restore state
+        if aof_file_path and os.path.exists(aof_file_path):
+            with open(aof_file_path, "rb") as f:
+                aof_data = f.read()
+            buf = aof_data
+            while buf:
+                args, buf = parse_resp_array(buf)
+                if args is None:
+                    break
+                try:
+                    execute_command(args)
+                except Exception:
+                    pass  # skip malformed commands
     if args.replicaof is not None:
         server_role = "slave"
         # Parse "host port" and connect to the master
