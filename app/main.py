@@ -549,6 +549,14 @@ def execute_command(args, tx=None):
         return b"+PONG\r\n"
     if command == "acl" and len(args) >= 2 and args[1].decode("utf-8", "replace").lower() == "whoami":
         return encode_bulk_string(b"default")
+    if command == "acl" and len(args) >= 3 and args[1].decode("utf-8", "replace").lower() == "getuser":
+        # ACL GETUSER username — return ["flags", []] for default user
+        flags_b = b"flags"
+        return (
+            b"*2\r\n"
+            + b"$" + str(len(flags_b)).encode() + b"\r\n" + flags_b + b"\r\n"
+            + b"*0\r\n"
+        )
     if command == "replconf":
         # Handle REPLCONF GETACK: respond with REPLCONF ACK <offset>
         if len(args) >= 2 and args[1].decode("utf-8", "replace").lower() == "getack":
