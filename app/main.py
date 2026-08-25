@@ -1019,7 +1019,7 @@ def handle_connection(conn):
                                 )
                             resp = (
                                 b"*3\r\n"
-                                + b"$12\r\nunsubscribe\r\n"
+                                + b"$11\r\nunsubscribe\r\n"
                                 + b"$" + str(len(ch)).encode() + b"\r\n" + ch + b"\r\n"
                                 + b":" + str(remaining).encode() + b"\r\n"
                             )
