@@ -9,6 +9,9 @@ from collections import deque
 store = {}
 store_lock = threading.Lock()
 
+# Server role: "master" by default, "slave" when --replicaof is set.
+server_role = "master"
+
 # In-memory lists shared by all client connections.
 # Maps key -> list of value bytes (order matters: index 0 is the head).
 lists = {}
@@ -298,7 +301,7 @@ def execute_command(args, tx=None):
     if command == "info":
         section = args[1].decode("utf-8", "replace").lower() if len(args) > 1 else ""
         if section == "replication" or section == "":
-            return encode_bulk_string(b"role:master")
+            return encode_bulk_string(f"role:{server_role}".encode())
     if command == "set" and len(args) >= 3:
         expires_at = None
         i = 3
@@ -681,7 +684,12 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=6379)
+    parser.add_argument("--replicaof", type=str, default=None)
     args = parser.parse_args()
+
+    global server_role
+    if args.replicaof is not None:
+        server_role = "slave"
 
     print("Logs from your program will appear here!")
 
