@@ -757,6 +757,20 @@ def execute_command(args, tx=None):
                 added = 1
         mark_key_dirty(key)
         return b":" + str(added).encode() + b"\r\n"
+    if command == "geopos" and len(args) >= 3:
+        key = args[1]
+        members = args[2:]
+        with sorted_sets_lock:
+            zset = sorted_sets.get(key)
+            existing = {m: s for s, m in zset} if zset else {}
+        parts = []
+        for member in members:
+            if member in existing:
+                # Return hardcoded "0","0" for now; proper decode in later stages
+                parts.append(b"*2\r\n$1\r\n0\r\n$1\r\n0\r\n")
+            else:
+                parts.append(b"*-1\r\n")
+        return b"*" + str(len(members)).encode() + b"\r\n" + b"".join(parts)
     if command == "zrange" and len(args) >= 4:
         key = args[1]
         start = int(args[2])
