@@ -16,6 +16,10 @@ store_lock = threading.Lock()
 # Server role: "master" by default, "slave" when --replicaof is set.
 server_role = "master"
 
+# Connected replicas (list of socket objects for propagation).
+replica_connections = []
+replica_connections_lock = threading.Lock()
+
 # In-memory lists shared by all client connections.
 # Maps key -> list of value bytes (order matters: index 0 is the head).
 lists = {}
@@ -175,6 +179,23 @@ def encode_resp_array(values) -> bytes:
     return b"*" + str(len(values)).encode() + b"\r\n" + b"".join(
         encode_bulk_string(v) for v in values
     )
+
+
+# Write commands that should be propagated to replicas.
+WRITE_COMMANDS = {"set", "del", "lpush", "rpush", "lpop", "rpop",
+                  "incr", "decr", "incrby", "decrby"}
+
+
+def propagate_to_replicas(args):
+    """Send a command to all connected replicas as a RESP array."""
+    with replica_connections_lock:
+        replicas = list(replica_connections)
+    payload = encode_resp_array(args)
+    for replica_conn in replicas:
+        try:
+            replica_conn.sendall(payload)
+        except (ConnectionResetError, BrokenPipeError):
+            pass  # replica disconnected; cleanup handled elsewhere
 
 
 def lrange_bounds(start: int, stop: int, length: int):
@@ -676,6 +697,7 @@ def handle_connection(conn):
     tx = {"active": False, "queue": [], "watcher": _Watcher()}
     with conn:
         buffer = b""
+        is_replica = False
         try:
             while True:
                 data = conn.recv(1024)
@@ -686,17 +708,31 @@ def handle_connection(conn):
                     args, buffer = parse_resp_array(buffer)
                     if args is None:
                         break
+                    command = args[0].decode("utf-8", "replace").lower() if args else ""
                     response = execute_command(args, tx)
                     conn.sendall(response)
                     # After PSYNC, send the empty RDB file
-                    if args and args[0].decode("utf-8", "replace").lower() == "psync":
+                    if command == "psync":
                         rdb_payload = (
                             b"$" + str(len(EMPTY_RDB)).encode() + b"\r\n" + EMPTY_RDB
                         )
                         conn.sendall(rdb_payload)
+                        # This connection is now a replica — register it
+                        is_replica = True
+                        with replica_connections_lock:
+                            replica_connections.append(conn)
+                    # Propagate write commands to replicas
+                    elif command in WRITE_COMMANDS and is_replica is False:
+                        propagate_to_replicas(args)
         except (ConnectionResetError, BrokenPipeError):
             pass  # client disconnected abruptly
         finally:
+            if is_replica:
+                with replica_connections_lock:
+                    try:
+                        replica_connections.remove(conn)
+                    except ValueError:
+                        pass
             unwatch_tx(tx)  # drop WATCH registrations held by this connection
 
 
