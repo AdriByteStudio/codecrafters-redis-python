@@ -684,14 +684,29 @@ def handle_connection(conn):
             unwatch_tx(tx)  # drop WATCH registrations held by this connection
 
 
-def handshake_with_master(master_host: str, master_port: int):
+def handshake_with_master(master_host: str, master_port: int, replica_port: int):
     """Connect to the master and perform the initial replication handshake."""
     master_conn = socket.create_connection((master_host, master_port))
     # Step 1: Send PING as a RESP array
     master_conn.sendall(b"*1\r\n$4\r\nPING\r\n")
-    # Read the response (we'll extend this in later stages)
     response = master_conn.recv(1024)
-    print(f"Master responded: {response}")
+    print(f"Master responded to PING: {response}")
+
+    # Step 2: Send REPLCONF listening-port <PORT>
+    port_str = str(replica_port).encode()
+    replconf_port = (
+        b"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n"
+        + b"$" + str(len(port_str)).encode() + b"\r\n" + port_str + b"\r\n"
+    )
+    master_conn.sendall(replconf_port)
+    response = master_conn.recv(1024)
+    print(f"Master responded to REPLCONF listening-port: {response}")
+
+    # Step 2b: Send REPLCONF capa psync2
+    master_conn.sendall(b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n")
+    response = master_conn.recv(1024)
+    print(f"Master responded to REPLCONF capa: {response}")
+
     return master_conn
 
 
@@ -711,7 +726,7 @@ def main():
         master_host, master_port = parts[0], int(parts[1])
         threading.Thread(
             target=handshake_with_master,
-            args=(master_host, master_port),
+            args=(master_host, master_port, args.port),
             daemon=True,
         ).start()
 
