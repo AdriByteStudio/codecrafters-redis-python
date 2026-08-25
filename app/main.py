@@ -59,6 +59,10 @@ channels_lock = threading.Lock()
 streams = {}
 streams_lock = threading.Lock()
 
+# Sorted sets: maps key -> list of (score, member) tuples sorted by score.
+sorted_sets = {}
+sorted_sets_lock = threading.Lock()
+
 # WATCH (optimistic locking) registrations:
 # maps watched key -> set of _Watcher objects watching that key.
 watched_keys = {}
@@ -359,7 +363,7 @@ def encode_resp_array(values) -> bytes:
 
 # Write commands that should be propagated to replicas.
 WRITE_COMMANDS = {"set", "del", "lpush", "rpush", "lpop", "rpop",
-                  "incr", "decr", "incrby", "decrby"}
+                  "incr", "decr", "incrby", "decrby", "zadd"}
 
 
 def append_to_aof(args):
@@ -643,6 +647,27 @@ def execute_command(args, tx=None):
             serve_blpop_waiters(key)
         mark_key_dirty(key)
         return b":" + str(length).encode() + b"\r\n"
+    if command == "zadd" and len(args) >= 4:
+        key = args[1]
+        # ZADD key score member [score member ...]
+        added = 0
+        with sorted_sets_lock:
+            zset = sorted_sets.setdefault(key, [])
+            # Build a set of existing members for quick lookup
+            existing = {m: s for s, m in zset}
+            i = 2
+            while i + 1 < len(args):
+                score = float(args[i])
+                member = args[i + 1]
+                if member not in existing:
+                    zset.append((score, member))
+                    existing[member] = score
+                    added += 1
+                i += 2
+            # Keep sorted by score, then by member for stable ordering
+            zset.sort(key=lambda x: (x[0], x[1]))
+        mark_key_dirty(key)
+        return b":" + str(added).encode() + b"\r\n"
     if command == "lpush" and len(args) >= 3:
         key, values = args[1], args[2:]
         with lists_lock:
