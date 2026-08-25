@@ -1101,13 +1101,17 @@ def main():
     # Load RDB file on startup
     rdb_path = os.path.join(config_dir, config_dbfilename)
     load_rdb_file(rdb_path)
-    # Create append-only directory and empty AOF file when AOF persistence is enabled
+    # Create append-only directory, AOF file, and manifest when AOF persistence is enabled
     if config_appendonly == "yes":
         aof_dir = os.path.join(config_dir, config_appenddirname)
         os.makedirs(aof_dir, exist_ok=True)
-        aof_path = os.path.join(aof_dir, f"{config_appendfilename}.1.incr.aof")
+        aof_name = f"{config_appendfilename}.1.incr.aof"
+        aof_path = os.path.join(aof_dir, aof_name)
         with open(aof_path, "a") as f:
             pass  # create empty file if it doesn't exist
+        manifest_path = os.path.join(aof_dir, f"{config_appendfilename}.manifest")
+        with open(manifest_path, "w") as f:
+            f.write(f"file {aof_name} seq 1 type i\n")
     if args.replicaof is not None:
         server_role = "slave"
         # Parse "host port" and connect to the master
