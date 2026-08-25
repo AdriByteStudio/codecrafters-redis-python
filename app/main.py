@@ -297,6 +297,9 @@ def execute_command(args, tx=None):
         return b"+PONG\r\n"
     if command == "replconf":
         return b"+OK\r\n"
+    if command == "psync":
+        repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
+        return f"+FULLRESYNC {repl_id} 0\r\n".encode()
     if command == "echo":
         value = args[1] if len(args) > 1 else b""
         return encode_bulk_string(value)
