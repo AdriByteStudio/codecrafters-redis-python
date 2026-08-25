@@ -973,16 +973,15 @@ def handle_connection(conn):
                     # Handle SUBSCRIBE: register the connection for channels
                     if command == "subscribe":
                         subscribed = True
-                        conn_id = id(conn)
                         for i in range(1, len(args)):
                             ch = args[i]
                             with channels_lock:
-                                channels_subscribers.setdefault(ch, set()).add(conn_id)
+                                channels_subscribers.setdefault(ch, set()).add(conn)
                             # Respond with ["subscribe", channel, total_subscriptions_for_this_client]
                             with channels_lock:
                                 client_count = sum(
                                     1 for subs in channels_subscribers.values()
-                                    if conn_id in subs
+                                    if conn in subs
                                 )
                             resp = (
                                 b"*3\r\n"
@@ -1004,12 +1003,25 @@ def handle_connection(conn):
                     if subscribed and command == "ping":
                         conn.sendall(b"*2\r\n$4\r\npong\r\n$0\r\n\r\n")
                         continue
-                    # PUBLISH returns the number of subscribers to the channel
+                    # PUBLISH delivers message to all subscribers and returns count
                     if command == "publish" and len(args) >= 3:
                         ch = args[1]
+                        msg = args[2]
                         with channels_lock:
-                            count = len(channels_subscribers.get(ch, set()))
-                        conn.sendall(b":" + str(count).encode() + b"\r\n")
+                            subscribers = list(channels_subscribers.get(ch, set()))
+                        # Deliver ["message", channel, msg] to each subscriber
+                        deliver = (
+                            b"*3\r\n"
+                            + b"$7\r\nmessage\r\n"
+                            + b"$" + str(len(ch)).encode() + b"\r\n" + ch + b"\r\n"
+                            + b"$" + str(len(msg)).encode() + b"\r\n" + msg + b"\r\n"
+                        )
+                        for sub_conn in subscribers:
+                            try:
+                                sub_conn.sendall(deliver)
+                            except (ConnectionResetError, BrokenPipeError):
+                                pass
+                        conn.sendall(b":" + str(len(subscribers)).encode() + b"\r\n")
                         continue
                     response = execute_command(args, tx)
                     conn.sendall(response)
@@ -1038,6 +1050,10 @@ def handle_connection(conn):
                         pass
                 with replica_ack_lock:
                     replica_ack_offsets.pop(id(conn), None)
+            # Remove from all channel subscriptions
+            with channels_lock:
+                for subs in channels_subscribers.values():
+                    subs.discard(conn)
             unwatch_tx(tx)  # drop WATCH registrations held by this connection
 
 
