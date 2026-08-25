@@ -774,6 +774,7 @@ def handshake_with_master(master_host: str, master_port: int, replica_port: int)
 
     # After handshake, read and process commands from the master (no responses sent)
     rdb_remaining = -1  # bytes of RDB payload still to read (-1 = not in RDB)
+    repl_offset = 0  # total bytes of commands processed so far
     while True:
         try:
             # Process whatever is in the buffer first
@@ -816,11 +817,13 @@ def handshake_with_master(master_host: str, master_port: int, replica_port: int)
                     if sub == "getack":
                         # Respond with REPLCONF ACK <offset>
                         ack_resp = encode_resp_array(
-                            [b"REPLCONF", b"ACK", b"0"]
+                            [b"REPLCONF", b"ACK", str(repl_offset).encode()]
                         )
                         master_conn.sendall(ack_resp)
                 else:
                     execute_command(args)
+                # Add this command's full RESP byte length to the offset
+                repl_offset += len(encode_resp_array(args))
                 # Don't send any response back to the master
                 progress = True
             # Buffer exhausted — wait for more data from master
