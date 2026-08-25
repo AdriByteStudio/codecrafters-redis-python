@@ -707,6 +707,11 @@ def handshake_with_master(master_host: str, master_port: int, replica_port: int)
     response = master_conn.recv(1024)
     print(f"Master responded to REPLCONF capa: {response}")
 
+    # Step 3: Send PSYNC ? -1
+    master_conn.sendall(b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n")
+    response = master_conn.recv(1024)
+    print(f"Master responded to PSYNC: {response}")
+
     return master_conn
 
 
