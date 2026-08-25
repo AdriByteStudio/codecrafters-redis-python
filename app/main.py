@@ -3,6 +3,7 @@ import threading
 import time
 import os
 import math
+import hashlib
 from collections import deque
 
 # Empty RDB file (hex) - used for full resynchronization
@@ -68,6 +69,10 @@ sorted_sets_lock = threading.Lock()
 # maps watched key -> set of _Watcher objects watching that key.
 watched_keys = {}
 watched_lock = threading.Lock()
+
+# ACL user state: username -> {"passwords": [sha256_hex, ...], "nopass": bool}
+users = {"default": {"passwords": [], "nopass": True}}
+users_lock = threading.Lock()
 
 # Geohash constants for encode/decode.
 MIN_LAT = -85.05112878
@@ -550,18 +555,51 @@ def execute_command(args, tx=None):
     if command == "acl" and len(args) >= 2 and args[1].decode("utf-8", "replace").lower() == "whoami":
         return encode_bulk_string(b"default")
     if command == "acl" and len(args) >= 3 and args[1].decode("utf-8", "replace").lower() == "getuser":
-        # ACL GETUSER username — return ["flags", ["nopass"], "passwords", []] for default user
+        username = args[2].decode("utf-8", "replace")
+        with users_lock:
+            user = users.get(username)
+        if user is None:
+            return b"$-1\r\n"
+        # Build flags array
+        flags = []
+        if user.get("nopass"):
+            flags.append(b"nopass")
+        # Build flags RESP array
+        if flags:
+            flags_resp = b"*" + str(len(flags)).encode() + b"\r\n" + b"".join(
+                b"$" + str(len(f)).encode() + b"\r\n" + f + b"\r\n" for f in flags
+            )
+        else:
+            flags_resp = b"*0\r\n"
+        # Build passwords RESP array
+        pwds = user.get("passwords", [])
+        if pwds:
+            pwds_resp = b"*" + str(len(pwds)).encode() + b"\r\n" + b"".join(
+                b"$" + str(len(p)).encode() + b"\r\n" + p + b"\r\n" for p in pwds
+            )
+        else:
+            pwds_resp = b"*0\r\n"
         flags_b = b"flags"
-        nopass_b = b"nopass"
         passwords_b = b"passwords"
         return (
             b"*4\r\n"
             + b"$" + str(len(flags_b)).encode() + b"\r\n" + flags_b + b"\r\n"
-            + b"*1\r\n"
-            + b"$" + str(len(nopass_b)).encode() + b"\r\n" + nopass_b + b"\r\n"
+            + flags_resp
             + b"$" + str(len(passwords_b)).encode() + b"\r\n" + passwords_b + b"\r\n"
-            + b"*0\r\n"
+            + pwds_resp
         )
+    if command == "acl" and len(args) >= 4 and args[1].decode("utf-8", "replace").lower() == "setuser":
+        username = args[2].decode("utf-8", "replace")
+        # Parse >password rule
+        rule = args[3].decode("utf-8", "replace")
+        if rule.startswith(">"):
+            password = rule[1:]
+            pwd_hash = hashlib.sha256(password.encode()).hexdigest().encode()
+            with users_lock:
+                user = users.setdefault(username, {"passwords": [], "nopass": True})
+                user["passwords"].append(pwd_hash)
+                user["nopass"] = False
+        return b"+OK\r\n"
     if command == "replconf":
         # Handle REPLCONF GETACK: respond with REPLCONF ACK <offset>
         if len(args) >= 2 and args[1].decode("utf-8", "replace").lower() == "getack":
