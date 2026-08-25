@@ -295,6 +295,8 @@ def execute_command(args, tx=None):
         return b"+QUEUED\r\n"
     if command == "ping":
         return b"+PONG\r\n"
+    if command == "replconf":
+        return b"+OK\r\n"
     if command == "echo":
         value = args[1] if len(args) > 1 else b""
         return encode_bulk_string(value)
