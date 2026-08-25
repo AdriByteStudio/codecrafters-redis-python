@@ -342,34 +342,31 @@ def execute_command(args, tx=None):
         timeout_ms = int(args[2])
         with replica_connections_lock:
             replicas = list(replica_connections)
-        import sys
-        print(f"[WAIT] called: {len(replicas)} replicas, need {num_replicas_needed}, master_repl_offset={master_repl_offset}", file=sys.stderr, flush=True)
         if not replicas:
-            print("[WAIT] no replicas, returning 0", file=sys.stderr, flush=True)
             return b":0\r\n"
         # Send REPLCONF GETACK * to all replicas
         getack_cmd = encode_resp_array([b"REPLCONF", b"GETACK", b"*"])
         for replica_conn in replicas:
             try:
                 replica_conn.sendall(getack_cmd)
-                print(f"[WAIT] sent GETACK to replica id={id(replica_conn)}", file=sys.stderr, flush=True)
             except (ConnectionResetError, BrokenPipeError):
                 pass
         # Poll until timeout or enough replicas have caught up
         deadline = time.monotonic() + timeout_ms / 1000.0
-        poll_count = 0
         while True:
             acked = 0
             with replica_ack_lock:
                 for replica_conn in replicas:
                     offset = replica_ack_offsets.get(id(replica_conn))
+                    # A replica is considered caught up if:
+                    # 1. It has acknowledged and its offset >= master_repl_offset, OR
+                    # 2. master_repl_offset is 0 (no writes) — replicas that haven't
+                    #    yet responded are still at offset 0 by default.
                     if offset is not None and offset >= master_repl_offset:
                         acked += 1
-            if poll_count % 50 == 0:
-                print(f"[WAIT] poll {poll_count}: acked={acked}, ack_offsets={dict(replica_ack_offsets)}", file=sys.stderr, flush=True)
-            poll_count += 1
+                    elif master_repl_offset == 0:
+                        acked += 1
             if acked >= num_replicas_needed or time.monotonic() >= deadline:
-                print(f"[WAIT] returning {acked}", file=sys.stderr, flush=True)
                 return b":" + str(acked).encode() + b"\r\n"
             time.sleep(0.01)
     if command == "echo":
@@ -749,8 +746,6 @@ def handle_connection(conn):
             while True:
                 data = conn.recv(1024)
                 if not data:
-                    import sys
-                    print(f"[HANDLE_CONN] conn id={id(conn)} recv returned empty, is_replica={is_replica}", file=sys.stderr, flush=True)
                     break
                 buffer += data
                 while True:
@@ -768,8 +763,6 @@ def handle_connection(conn):
                                 ack_offset = 0
                             with replica_ack_lock:
                                 replica_ack_offsets[id(conn)] = ack_offset
-                            import sys
-                            print(f"[REPLCONF ACK] conn_id={id(conn)}, offset={ack_offset}", file=sys.stderr, flush=True)
                             continue  # don't send a response back
                     response = execute_command(args, tx)
                     conn.sendall(response)
@@ -783,21 +776,16 @@ def handle_connection(conn):
                         is_replica = True
                         with replica_connections_lock:
                             replica_connections.append(conn)
-                        import sys
-                        print(f"[PSYNC] Added replica id={id(conn)}, total={len(replica_connections)}", file=sys.stderr, flush=True)
                     # Propagate write commands to replicas
                     elif command in WRITE_COMMANDS and is_replica is False:
                         propagate_to_replicas(args)
-        except (ConnectionResetError, BrokenPipeError) as e:
-            import sys
-            print(f"[HANDLE_CONN] Disconnected replica id={id(conn)}: {e}", file=sys.stderr, flush=True)
+        except (ConnectionResetError, BrokenPipeError):
+            pass  # client disconnected abruptly
         finally:
             if is_replica:
                 with replica_connections_lock:
                     try:
                         replica_connections.remove(conn)
-                        import sys
-                        print(f"[HANDLE_CONN] Removed replica id={id(conn)}, remaining={len(replica_connections)}", file=sys.stderr, flush=True)
                     except ValueError:
                         pass
                 with replica_ack_lock:
