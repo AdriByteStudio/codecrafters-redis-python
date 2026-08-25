@@ -1003,6 +1003,28 @@ def handle_connection(conn):
                     if subscribed and command == "ping":
                         conn.sendall(b"*2\r\n$4\r\npong\r\n$0\r\n\r\n")
                         continue
+                    # UNSUBSCRIBE: remove client from one or more channels
+                    if command == "unsubscribe":
+                        channels_to_unsub = args[1:] if len(args) > 1 else []
+                        for ch in channels_to_unsub:
+                            with channels_lock:
+                                subs = channels_subscribers.get(ch)
+                                if subs:
+                                    subs.discard(conn)
+                            # Count remaining subscriptions for this client
+                            with channels_lock:
+                                remaining = sum(
+                                    1 for s in channels_subscribers.values()
+                                    if conn in s
+                                )
+                            resp = (
+                                b"*3\r\n"
+                                + b"$12\r\nunsubscribe\r\n"
+                                + b"$" + str(len(ch)).encode() + b"\r\n" + ch + b"\r\n"
+                                + b":" + str(remaining).encode() + b"\r\n"
+                            )
+                            conn.sendall(resp)
+                        continue
                     # PUBLISH delivers message to all subscribers and returns count
                     if command == "publish" and len(args) >= 3:
                         ch = args[1]
