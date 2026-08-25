@@ -687,6 +687,17 @@ def execute_command(args, tx=None):
         with sorted_sets_lock:
             zset = sorted_sets.get(key)
             return b":" + str(len(zset) if zset else 0).encode() + b"\r\n"
+    if command == "zscore" and len(args) >= 3:
+        key = args[1]
+        member = args[2]
+        with sorted_sets_lock:
+            zset = sorted_sets.get(key)
+            if zset is None:
+                return b"$-1\r\n"
+            for s, m in zset:
+                if m == member:
+                    return encode_bulk_string(str(s).encode())
+            return b"$-1\r\n"
     if command == "zrange" and len(args) >= 4:
         key = args[1]
         start = int(args[2])
