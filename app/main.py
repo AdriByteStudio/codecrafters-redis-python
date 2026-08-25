@@ -1000,6 +1000,10 @@ def handle_connection(conn):
                         err_msg = f"ERR Can't execute '{command}' only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context"
                         conn.sendall(f"-{err_msg}\r\n".encode())
                         continue
+                    # PING in subscribed mode returns ["pong", ""] instead of +PONG
+                    if subscribed and command == "ping":
+                        conn.sendall(b"*2\r\n$4\r\npong\r\n$0\r\n\r\n")
+                        continue
                     response = execute_command(args, tx)
                     conn.sendall(response)
                     # After PSYNC, send the empty RDB file
