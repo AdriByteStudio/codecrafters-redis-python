@@ -718,6 +718,11 @@ def execute_command(args, tx=None):
         lon = float(args[2])
         lat = float(args[3])
         member = args[4]
+        # Validate longitude [-180, 180] and latitude [-85.05112878, 85.05112878]
+        if lon < -180 or lon > 180:
+            return b"-ERR invalid longitude,latitude pair\r\n"
+        if lat < -85.05112878 or lat > 85.05112878:
+            return b"-ERR invalid longitude,latitude pair\r\n"
         # Encode lon/lat into a geohash score (interleaved bits)
         def geo_score(lon, lat):
             lat_norm = (lat + 85.05112878) / (2.0 * 85.05112878)
