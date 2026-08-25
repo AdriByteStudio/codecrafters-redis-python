@@ -1258,6 +1258,10 @@ def handle_connection(conn):
     with conn:
         buffer = b""
         is_replica = False
+        # Auth: start authenticated only if default user has nopass
+        with users_lock:
+            default_user = users.get("default", {})
+            authenticated = default_user.get("nopass", True)
         try:
             while True:
                 data = conn.recv(1024)
@@ -1355,7 +1359,14 @@ def handle_connection(conn):
                                 pass
                         conn.sendall(b":" + str(len(subscribers)).encode() + b"\r\n")
                         continue
+                    # Authentication check: allow auth/acl without auth
+                    if not authenticated and command not in ("auth", "acl"):
+                        conn.sendall(b"-NOAUTH Authentication required.\r\n")
+                        continue
                     response = execute_command(args, tx)
+                    # If AUTH command returned OK, mark this connection authenticated
+                    if command == "auth" and response == b"+OK\r\n":
+                        authenticated = True
                     conn.sendall(response)
                     # After PSYNC, send the empty RDB file
                     if command == "psync":
