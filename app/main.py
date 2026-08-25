@@ -684,6 +684,17 @@ def handle_connection(conn):
             unwatch_tx(tx)  # drop WATCH registrations held by this connection
 
 
+def handshake_with_master(master_host: str, master_port: int):
+    """Connect to the master and perform the initial replication handshake."""
+    master_conn = socket.create_connection((master_host, master_port))
+    # Step 1: Send PING as a RESP array
+    master_conn.sendall(b"*1\r\n$4\r\nPING\r\n")
+    # Read the response (we'll extend this in later stages)
+    response = master_conn.recv(1024)
+    print(f"Master responded: {response}")
+    return master_conn
+
+
 def main():
     import argparse
 
@@ -695,6 +706,14 @@ def main():
     global server_role
     if args.replicaof is not None:
         server_role = "slave"
+        # Parse "host port" and connect to the master
+        parts = args.replicaof.split()
+        master_host, master_port = parts[0], int(parts[1])
+        threading.Thread(
+            target=handshake_with_master,
+            args=(master_host, master_port),
+            daemon=True,
+        ).start()
 
     print("Logs from your program will appear here!")
 
