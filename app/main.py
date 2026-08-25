@@ -20,6 +20,13 @@ server_role = "master"
 replica_connections = []
 replica_connections_lock = threading.Lock()
 
+# Master replication offset: total bytes of commands sent to replicas.
+master_repl_offset = 0
+
+# Last ACK offset received from each replica, keyed by socket id.
+replica_ack_offsets = {}  # id(conn) -> last acknowledged offset
+replica_ack_lock = threading.Lock()
+
 # In-memory lists shared by all client connections.
 # Maps key -> list of value bytes (order matters: index 0 is the head).
 lists = {}
@@ -188,6 +195,7 @@ WRITE_COMMANDS = {"set", "del", "lpush", "rpush", "lpop", "rpop",
 
 def propagate_to_replicas(args):
     """Send a command to all connected replicas as a RESP array."""
+    global master_repl_offset
     with replica_connections_lock:
         replicas = list(replica_connections)
     payload = encode_resp_array(args)
@@ -196,6 +204,7 @@ def propagate_to_replicas(args):
             replica_conn.sendall(payload)
         except (ConnectionResetError, BrokenPipeError):
             pass  # replica disconnected; cleanup handled elsewhere
+    master_repl_offset += len(payload)
 
 
 def lrange_bounds(start: int, stop: int, length: int):
@@ -329,10 +338,31 @@ def execute_command(args, tx=None):
         repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
         return f"+FULLRESYNC {repl_id} 0\r\n".encode()
     if command == "wait" and len(args) >= 3:
-        # For now, return the number of connected replicas (0 when none).
+        num_replicas_needed = int(args[1])
+        timeout_ms = int(args[2])
         with replica_connections_lock:
-            num_replicas = len(replica_connections)
-        return b":" + str(num_replicas).encode() + b"\r\n"
+            replicas = list(replica_connections)
+        if not replicas:
+            return b":0\r\n"
+        # Send REPLCONF GETACK * to all replicas
+        getack_cmd = encode_resp_array([b"REPLCONF", b"GETACK", b"*"])
+        for replica_conn in replicas:
+            try:
+                replica_conn.sendall(getack_cmd)
+            except (ConnectionResetError, BrokenPipeError):
+                pass
+        # Poll until timeout or enough replicas have caught up
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        while True:
+            acked = 0
+            with replica_ack_lock:
+                for replica_conn in replicas:
+                    offset = replica_ack_offsets.get(id(replica_conn))
+                    if offset is not None and offset >= master_repl_offset:
+                        acked += 1
+            if acked >= num_replicas_needed or time.monotonic() >= deadline:
+                return b":" + str(acked).encode() + b"\r\n"
+            time.sleep(0.01)
     if command == "echo":
         value = args[1] if len(args) > 1 else b""
         return encode_bulk_string(value)
@@ -717,6 +747,17 @@ def handle_connection(conn):
                     if args is None:
                         break
                     command = args[0].decode("utf-8", "replace").lower() if args else ""
+                    # If this is a replica sending REPLCONF ACK, store the offset
+                    if is_replica and command == "replconf" and len(args) >= 3:
+                        sub = args[1].decode("utf-8", "replace").lower()
+                        if sub == "ack":
+                            try:
+                                ack_offset = int(args[2])
+                            except ValueError:
+                                ack_offset = 0
+                            with replica_ack_lock:
+                                replica_ack_offsets[id(conn)] = ack_offset
+                            continue  # don't send a response back
                     response = execute_command(args, tx)
                     conn.sendall(response)
                     # After PSYNC, send the empty RDB file
@@ -741,6 +782,8 @@ def handle_connection(conn):
                         replica_connections.remove(conn)
                     except ValueError:
                         pass
+                with replica_ack_lock:
+                    replica_ack_offsets.pop(id(conn), None)
             unwatch_tx(tx)  # drop WATCH registrations held by this connection
 
 
