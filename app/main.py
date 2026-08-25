@@ -301,7 +301,12 @@ def execute_command(args, tx=None):
     if command == "info":
         section = args[1].decode("utf-8", "replace").lower() if len(args) > 1 else ""
         if section == "replication" or section == "":
-            return encode_bulk_string(f"role:{server_role}".encode())
+            lines = [
+                f"role:{server_role}",
+                "master_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb",
+                "master_repl_offset:0",
+            ]
+            return encode_bulk_string("\r\n".join(lines).encode())
     if command == "set" and len(args) >= 3:
         expires_at = None
         i = 3
