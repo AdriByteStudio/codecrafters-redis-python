@@ -1004,6 +1004,13 @@ def handle_connection(conn):
                     if subscribed and command == "ping":
                         conn.sendall(b"*2\r\n$4\r\npong\r\n$0\r\n\r\n")
                         continue
+                    # PUBLISH returns the number of subscribers to the channel
+                    if command == "publish" and len(args) >= 3:
+                        ch = args[1]
+                        with channels_lock:
+                            count = len(channels_subscribers.get(ch, set()))
+                        conn.sendall(b":" + str(count).encode() + b"\r\n")
+                        continue
                     response = execute_command(args, tx)
                     conn.sendall(response)
                     # After PSYNC, send the empty RDB file
