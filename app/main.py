@@ -1137,7 +1137,7 @@ def main():
             with open(manifest_path, "r") as f:
                 for line in f:
                     parts = line.strip().split()
-                    if len(parts) >= 5 and parts[0] == "file" and parts[4] == "i":
+                    if len(parts) >= 6 and parts[0] == "file" and parts[4] == "type" and parts[5] == "i":
                         aof_file_path = os.path.join(aof_dir, parts[1])
                         break
     if args.replicaof is not None:
