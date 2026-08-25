@@ -810,6 +810,28 @@ def execute_command(args, tx=None):
             else:
                 parts.append(b"*-1\r\n")
         return b"*" + str(len(members)).encode() + b"\r\n" + b"".join(parts)
+    if command == "geodist" and len(args) >= 4:
+        key = args[1]
+        member1 = args[2]
+        member2 = args[3]
+        with sorted_sets_lock:
+            zset = sorted_sets.get(key)
+            existing = {m: s for s, m in zset} if zset else {}
+        score1 = existing.get(member1)
+        score2 = existing.get(member2)
+        if score1 is None or score2 is None:
+            return b"$-1\r\n"
+        lon1, lat1 = geo_decode(score1)
+        lon2, lat2 = geo_decode(score2)
+        # Haversine formula
+        R = 6372797.560856  # Earth radius in meters
+        lat1_r, lat2_r = math.radians(lat1), math.radians(lat2)
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+        a = math.sin(dlat / 2) ** 2 + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(dlon / 2) ** 2
+        dist = R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        result = f"{dist:.4f}".encode()
+        return b"$" + str(len(result)).encode() + b"\r\n" + result + b"\r\n"
     if command == "zrange" and len(args) >= 4:
         key = args[1]
         start = int(args[2])
