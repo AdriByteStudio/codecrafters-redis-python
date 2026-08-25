@@ -27,6 +27,9 @@ config_appenddirname = "appendonlydir"
 config_appendfilename = "appendonly.aof"
 config_appendfsync = "everysec"
 
+# Active AOF file path (read from manifest on startup, None if not enabled).
+aof_file_path = None
+
 # Connected replicas (list of socket objects for propagation).
 replica_connections = []
 replica_connections_lock = threading.Lock()
@@ -353,6 +356,18 @@ def encode_resp_array(values) -> bytes:
 # Write commands that should be propagated to replicas.
 WRITE_COMMANDS = {"set", "del", "lpush", "rpush", "lpop", "rpop",
                   "incr", "decr", "incrby", "decrby"}
+
+
+def append_to_aof(args):
+    """Append a command in RESP format to the active AOF file."""
+    if aof_file_path is None or config_appendonly != "yes":
+        return
+    resp = encode_resp_array(args)
+    with open(aof_file_path, "ab") as f:
+        f.write(resp)
+        if config_appendfsync == "always":
+            f.flush()
+            os.fsync(f.fileno())
 
 
 def propagate_to_replicas(args):
@@ -965,6 +980,7 @@ def handle_connection(conn):
                     # Propagate write commands to replicas
                     elif command in WRITE_COMMANDS and is_replica is False:
                         propagate_to_replicas(args)
+                        append_to_aof(args)
         except (ConnectionResetError, BrokenPipeError):
             pass  # client disconnected abruptly
         finally:
@@ -1112,6 +1128,14 @@ def main():
         manifest_path = os.path.join(aof_dir, f"{config_appendfilename}.manifest")
         with open(manifest_path, "w") as f:
             f.write(f"file {aof_name} seq 1 type i\n")
+        # Read manifest to find the active incremental AOF file
+        global aof_file_path
+        with open(manifest_path, "r") as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 5 and parts[0] == "file" and parts[4] == "i":
+                    aof_file_path = os.path.join(aof_dir, parts[1])
+                    break
     if args.replicaof is not None:
         server_role = "slave"
         # Parse "host port" and connect to the master
