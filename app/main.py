@@ -552,6 +552,19 @@ def execute_command(args, tx=None):
         return b"+QUEUED\r\n"
     if command == "ping":
         return b"+PONG\r\n"
+    if command == "auth" and len(args) >= 3:
+        username = args[1].decode("utf-8", "replace")
+        password = args[2].decode("utf-8", "replace")
+        pwd_hash = hashlib.sha256(password.encode()).hexdigest().encode()
+        with users_lock:
+            user = users.get(username)
+        if user is None:
+            return b"-WRONGPASS invalid username-password pair or user is disabled.\r\n"
+        # Check if password hash matches any stored hash
+        stored = user.get("passwords", [])
+        if pwd_hash in stored:
+            return b"+OK\r\n"
+        return b"-WRONGPASS invalid username-password pair or user is disabled.\r\n"
     if command == "acl" and len(args) >= 2 and args[1].decode("utf-8", "replace").lower() == "whoami":
         return encode_bulk_string(b"default")
     if command == "acl" and len(args) >= 3 and args[1].decode("utf-8", "replace").lower() == "getuser":
