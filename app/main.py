@@ -1085,11 +1085,19 @@ def main():
     parser.add_argument("--replicaof", type=str, default=None)
     parser.add_argument("--dir", type=str, default=os.getcwd())
     parser.add_argument("--dbfilename", type=str, default="dump.rdb")
+    parser.add_argument("--appendonly", type=str, default="no")
+    parser.add_argument("--appenddirname", type=str, default="appendonlydir")
+    parser.add_argument("--appendfilename", type=str, default="appendonly.aof")
+    parser.add_argument("--appendfsync", type=str, default="everysec")
     args = parser.parse_args()
 
-    global server_role, config_dir, config_dbfilename
+    global server_role, config_dir, config_dbfilename, config_appendonly, config_appenddirname, config_appendfilename, config_appendfsync
     config_dir = args.dir
     config_dbfilename = args.dbfilename
+    config_appendonly = args.appendonly
+    config_appenddirname = args.appenddirname
+    config_appendfilename = args.appendfilename
+    config_appendfsync = args.appendfsync
     # Load RDB file on startup
     rdb_path = os.path.join(config_dir, config_dbfilename)
     load_rdb_file(rdb_path)
