@@ -328,6 +328,11 @@ def execute_command(args, tx=None):
     if command == "psync":
         repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
         return f"+FULLRESYNC {repl_id} 0\r\n".encode()
+    if command == "wait" and len(args) >= 3:
+        # For now, return the number of connected replicas (0 when none).
+        with replica_connections_lock:
+            num_replicas = len(replica_connections)
+        return b":" + str(num_replicas).encode() + b"\r\n"
     if command == "echo":
         value = args[1] if len(args) > 1 else b""
         return encode_bulk_string(value)
