@@ -944,6 +944,7 @@ def execute_command(args, tx=None):
 def handle_connection(conn):
     # Per-connection transaction state (MULTI/EXEC/WATCH).
     tx = {"active": False, "queue": [], "watcher": _Watcher()}
+    subscribed = False  # whether this connection is in subscribed mode
     with conn:
         buffer = b""
         is_replica = False
@@ -971,6 +972,7 @@ def handle_connection(conn):
                             continue  # don't send a response back
                     # Handle SUBSCRIBE: register the connection for channels
                     if command == "subscribe":
+                        subscribed = True
                         conn_id = id(conn)
                         for i in range(1, len(args)):
                             ch = args[i]
@@ -990,6 +992,14 @@ def handle_connection(conn):
                             )
                             conn.sendall(resp)
                         continue  # skip normal execute_command
+                    # In subscribed mode, only allow a subset of commands
+                    if subscribed and command not in (
+                        "subscribe", "unsubscribe", "psubscribe",
+                        "punsubscribe", "ping", "quit", "reset",
+                    ):
+                        err_msg = f"ERR Can't execute '{command}' only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context"
+                        conn.sendall(f"-{err_msg}\r\n".encode())
+                        continue
                     response = execute_command(args, tx)
                     conn.sendall(response)
                     # After PSYNC, send the empty RDB file
