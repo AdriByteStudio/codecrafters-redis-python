@@ -69,6 +69,38 @@ sorted_sets_lock = threading.Lock()
 watched_keys = {}
 watched_lock = threading.Lock()
 
+# Geohash constants for encode/decode.
+MIN_LAT = -85.05112878
+MAX_LAT = 85.05112878
+MIN_LON = -180.0
+MAX_LON = 180.0
+LAT_RANGE = MAX_LAT - MIN_LAT
+LON_RANGE = MAX_LON - MIN_LON
+
+
+def geo_decode(score):
+    """Decode a geohash score back to (longitude, latitude)."""
+    geo_code = int(score)
+    # Extract lat bits (even positions) and lon bits (odd positions)
+    x = geo_code
+    y = geo_code >> 1
+
+    def compact64_to_32(v):
+        v &= 0x5555555555555555
+        v = (v | (v >> 1)) & 0x3333333333333333
+        v = (v | (v >> 2)) & 0x0F0F0F0F0F0F0F0F
+        v = (v | (v >> 4)) & 0x00FF00FF00FF00FF
+        v = (v | (v >> 8)) & 0x0000FFFF0000FFFF
+        v = (v | (v >> 16)) & 0x00000000FFFFFFFF
+        return v
+
+    grid_lat = compact64_to_32(x)
+    grid_lon = compact64_to_32(y)
+
+    lat = MIN_LAT + LAT_RANGE * ((grid_lat + 0.5) / (1 << 26))
+    lon = MIN_LON + LON_RANGE * ((grid_lon + 0.5) / (1 << 26))
+    return lon, lat
+
 
 def load_rdb_file(filepath):
     """Parse a Redis RDB file and populate the in-memory store.
@@ -766,8 +798,15 @@ def execute_command(args, tx=None):
         parts = []
         for member in members:
             if member in existing:
-                # Return hardcoded "0","0" for now; proper decode in later stages
-                parts.append(b"*2\r\n$1\r\n0\r\n$1\r\n0\r\n")
+                lon, lat = geo_decode(existing[member])
+                lon_str = str(lon)
+                lat_str = str(lat)
+                lon_b = lon_str.encode()
+                lat_b = lat_str.encode()
+                parts.append(
+                    b"*2\r\n$" + str(len(lon_b)).encode() + b"\r\n" + lon_b + b"\r\n"
+                    + b"$" + str(len(lat_b)).encode() + b"\r\n" + lat_b + b"\r\n"
+                )
             else:
                 parts.append(b"*-1\r\n")
         return b"*" + str(len(members)).encode() + b"\r\n" + b"".join(parts)
