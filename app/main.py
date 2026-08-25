@@ -49,6 +49,10 @@ lists_lock = threading.Lock()
 # Blocked BLPOP clients, FIFO per list key (longest-waiting first).
 blpop_waiters = {}  # key -> deque of _BlpopWaiter
 
+# Pub/Sub state: maps channel name (bytes) -> set of subscriber socket ids.
+channels_subscribers = {}
+channels_lock = threading.Lock()
+
 # In-memory streams shared by all client connections.
 # Maps key -> list of entries in chronological order,
 # where each entry is (id_bytes, [(field_bytes, value_bytes), ...]).
@@ -965,6 +969,24 @@ def handle_connection(conn):
                             with replica_ack_lock:
                                 replica_ack_offsets[id(conn)] = ack_offset
                             continue  # don't send a response back
+                    # Handle SUBSCRIBE: register the connection for channels
+                    if command == "subscribe":
+                        conn_id = id(conn)
+                        for i in range(1, len(args)):
+                            ch = args[i]
+                            with channels_lock:
+                                channels_subscribers.setdefault(ch, set()).add(conn_id)
+                            # Respond with ["subscribe", channel, total_subscriptions_for_this_client]
+                            with channels_lock:
+                                client_count = sum(
+                                    1 for subs in channels_subscribers.values()
+                                    if conn_id in subs
+                                )
+                            resp = encode_resp_array([
+                                b"subscribe", ch, str(client_count).encode()
+                            ])
+                            conn.sendall(resp)
+                        continue  # skip normal execute_command
                     response = execute_command(args, tx)
                     conn.sendall(response)
                     # After PSYNC, send the empty RDB file
