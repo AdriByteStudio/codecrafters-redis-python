@@ -400,7 +400,7 @@ def encode_resp_array(values) -> bytes:
 
 
 # Write commands that should be propagated to replicas.
-WRITE_COMMANDS = {"set", "setbit", "del", "lpush", "rpush", "lpop", "rpop",
+WRITE_COMMANDS = {"set", "setbit", "bitop", "del", "lpush", "rpush", "lpop", "rpop",
                   "incr", "decr", "incrby", "decrby", "zadd", "geoadd"}
 
 
@@ -797,6 +797,51 @@ def execute_command(args, tx=None):
             end = min(end, n - 1)  # clamp end to the last byte
         count = sum(bin(b).count("1") for b in value[start:end + 1])
         return b":" + str(count).encode() + b"\r\n"
+    if command == "bitop" and len(args) >= 4:
+        op = args[1].decode("utf-8", "replace").upper()
+        dest = args[2]
+        src_keys = args[3:]
+        if op == "NOT" and len(src_keys) != 1:
+            return b"-ERR BITOP NOT must be called with a single source key.\r\n"
+        if op not in ("AND", "OR", "XOR", "NOT"):
+            return b"-ERR syntax error\r\n"
+        # Fetch source strings; missing keys are treated as empty (all zeros).
+        src_values = []
+        max_len = 0
+        for key in src_keys:
+            v = get_live_value(key)
+            if v is None:
+                v = b""
+            src_values.append(v)
+            max_len = max(max_len, len(v))
+        if op == "NOT":
+            max_len = len(src_values[0])
+        result = bytearray(max_len)
+        for i in range(max_len):
+            if op == "AND":
+                acc = 0xFF
+                for v in src_values:
+                    acc &= v[i] if i < len(v) else 0
+            elif op == "OR":
+                acc = 0
+                for v in src_values:
+                    acc |= v[i] if i < len(v) else 0
+            elif op == "XOR":
+                acc = 0
+                for v in src_values:
+                    acc ^= v[i] if i < len(v) else 0
+            else:  # NOT
+                acc = ~src_values[0][i] & 0xFF
+            result[i] = acc
+        if max_len == 0:
+            # Empty result: delete the destination key, like real Redis.
+            with store_lock:
+                store.pop(dest, None)
+        else:
+            with store_lock:
+                store[dest] = (bytes(result), None)
+        mark_key_dirty(dest)
+        return b":" + str(max_len).encode() + b"\r\n"
     if command == "incr" and len(args) >= 2:
         key = args[1]
         with store_lock:
