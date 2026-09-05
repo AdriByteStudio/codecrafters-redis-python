@@ -400,7 +400,7 @@ def encode_resp_array(values) -> bytes:
 
 
 # Write commands that should be propagated to replicas.
-WRITE_COMMANDS = {"set", "del", "lpush", "rpush", "lpop", "rpop",
+WRITE_COMMANDS = {"set", "setbit", "del", "lpush", "rpush", "lpop", "rpop",
                   "incr", "decr", "incrby", "decrby", "zadd", "geoadd"}
 
 
@@ -713,6 +713,47 @@ def execute_command(args, tx=None):
     if command == "get" and len(args) >= 2:
         value = get_live_value(args[1])
         return encode_bulk_string(value) if value is not None else b"$-1\r\n"
+    if command == "setbit" and len(args) >= 4:
+        key = args[1]
+        try:
+            offset = int(args[2])
+        except ValueError:
+            return b"-ERR bit offset is not an integer or out of range\r\n"
+        if offset < 0:
+            return b"-ERR bit offset is not an integer or out of range\r\n"
+        try:
+            bit = int(args[3])
+        except ValueError:
+            return b"-ERR value is not an integer or out of range\r\n"
+        if bit not in (0, 1):
+            return b"-ERR bit is not an integer or out of range\r\n"
+        with store_lock:
+            entry = store.get(key)
+            if entry is not None:
+                value, expires_at = entry
+                if expires_at is not None and now_ms() >= expires_at:
+                    del store[key]  # lazily evict expired key
+                    value = b""
+                    expires_at = None
+            else:
+                value = b""
+                expires_at = None
+            # Bitmaps are strings; offset 0 is the most significant bit of
+            # the first byte, so bit_index counts down from 7 within a byte.
+            byte_index = offset // 8
+            bit_index = 7 - (offset % 8)
+            if len(value) <= byte_index:
+                value += b"\x00" * (byte_index + 1 - len(value))
+            byte = value[byte_index]
+            original_bit = (byte >> bit_index) & 1
+            if bit:
+                byte |= 1 << bit_index
+            else:
+                byte &= ~(1 << bit_index)
+            value = value[:byte_index] + bytes([byte]) + value[byte_index + 1:]
+            store[key] = (value, expires_at)  # preserve any existing TTL
+        mark_key_dirty(key)
+        return b":" + str(original_bit).encode() + b"\r\n"
     if command == "incr" and len(args) >= 2:
         key = args[1]
         with store_lock:
