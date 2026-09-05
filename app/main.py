@@ -775,6 +775,28 @@ def execute_command(args, tx=None):
         value = get_live_value(args[1])
         length = len(value) if value is not None else 0
         return b":" + str(length).encode() + b"\r\n"
+    if command == "bitcount" and len(args) >= 2:
+        value = get_live_value(args[1])
+        if value is None:
+            return b":0\r\n"  # missing key has no set bits
+        n = len(value)
+        start, end = 0, n - 1
+        if len(args) >= 4:
+            try:
+                start = int(args[2])
+                end = int(args[3])
+            except ValueError:
+                return b"-ERR value is not an integer or out of range\r\n"
+            # Byte indexes; negative counts from the end of the string.
+            if start < 0:
+                start = max(n + start, 0)
+            if end < 0:
+                end = n + end
+            if start > end or start >= n:
+                return b":0\r\n"
+            end = min(end, n - 1)  # clamp end to the last byte
+        count = sum(bin(b).count("1") for b in value[start:end + 1])
+        return b":" + str(count).encode() + b"\r\n"
     if command == "incr" and len(args) >= 2:
         key = args[1]
         with store_lock:
