@@ -771,6 +771,10 @@ def execute_command(args, tx=None):
         bit_index = 7 - (offset % 8)  # MSB-first bit ordering
         bit = (value[byte_index] >> bit_index) & 1
         return b":" + str(bit).encode() + b"\r\n"
+    if command == "strlen" and len(args) >= 2:
+        value = get_live_value(args[1])
+        length = len(value) if value is not None else 0
+        return b":" + str(length).encode() + b"\r\n"
     if command == "incr" and len(args) >= 2:
         key = args[1]
         with store_lock:
