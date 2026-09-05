@@ -754,6 +754,23 @@ def execute_command(args, tx=None):
             store[key] = (value, expires_at)  # preserve any existing TTL
         mark_key_dirty(key)
         return b":" + str(original_bit).encode() + b"\r\n"
+    if command == "getbit" and len(args) >= 3:
+        key = args[1]
+        try:
+            offset = int(args[2])
+        except ValueError:
+            return b"-ERR bit offset is not an integer or out of range\r\n"
+        if offset < 0:
+            return b"-ERR bit offset is not an integer or out of range\r\n"
+        value = get_live_value(key)
+        if value is None:
+            return b":0\r\n"  # missing key is treated as all zeros
+        byte_index = offset // 8
+        if byte_index >= len(value):
+            return b":0\r\n"  # offset beyond the string length is 0
+        bit_index = 7 - (offset % 8)  # MSB-first bit ordering
+        bit = (value[byte_index] >> bit_index) & 1
+        return b":" + str(bit).encode() + b"\r\n"
     if command == "incr" and len(args) >= 2:
         key = args[1]
         with store_lock:
